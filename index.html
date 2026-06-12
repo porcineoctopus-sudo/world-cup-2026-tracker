@@ -339,27 +339,65 @@ function fmtPct(t){ const g=GUAR[t];
   if(g==='in') return '100%'; if(g==='out') return '0%';
   const r=Math.round((LIVE[t]||0)*100);
   return r>=100 ? '>99%' : r<=0 ? '<1%' : r+'%'; }
-// Exact per-group clinch/elimination. Enumerate the remaining games' win/draw/loss
-// and, treating goal-difference ties adversarially (so a claim is always sound),
-// mark each team guaranteed top-two ('in'), guaranteed out ('out'), or still open.
+// Sound clinch/elimination, so 100% / 0% mean a true guarantee. Per group we
+// enumerate the remaining games' win/draw/loss and bound each team's finishing
+// rank — resolving ties by ACTUAL goal difference once both tied teams have
+// finished (so a decided group reads exactly) and adversarially while games
+// remain. Then a cross-group points-bounds check settles the best-third race for
+// clear cases: a third already beaten by >=8 better thirds is out; one at most 7
+// others can reach is in. Anything still undecided stays 'open' (>99% / <1%).
 function guarantees(){
-  const out={};
-  for(const g of GL){
-    const teams=D.groups[g], cur=[0,0,0,0], rem=[];
+  const egd={}, egf={}, hasRem={};   // entered goal diff / goals-for; games left?
+  for(const g of GL){ const ts=D.groups[g];
+    for(let s=0;s<4;s++){ egd[ts[s]]=0; egf[ts[s]]=0; hasRem[ts[s]]=false; }
+    for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
+      const sc=scores[g][mi], a=+sc.a, b=+sc.b;
+      if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ egd[ts[i]]+=a-b; egf[ts[i]]+=a; egd[ts[j]]+=b-a; egf[ts[j]]+=b; }
+      else { hasRem[ts[i]]=true; hasRem[ts[j]]=true; } } }
+  const beats=(y,x)=> egd[y]>egd[x] || (egd[y]===egd[x] && (egf[y]>egf[x] || (egf[y]===egf[x] && S[y]>S[x])));
+  const mustT2={}, mustT3={}, cantT2={}, cantT3={}, pMax={}, pMin={}, minThird={}, maxThird={};
+  for(const g of GL){ const ts=D.groups[g], cur=[0,0,0,0], rem=[];
     for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
       const sc=scores[g][mi], a=+sc.a, b=+sc.b;
       if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ if(a>b)cur[i]+=3; else if(b>a)cur[j]+=3; else {cur[i]++;cur[j]++;} }
       else rem.push([i,j]); }
-    const total=Math.pow(3,rem.length), maxAE=[0,0,0,0], minAb=[3,3,3,3];
-    for(let m=0; m<total; m++){ const pts=cur.slice(); let x=m;
+    const total=Math.pow(3,rem.length);
+    const wMax=[0,0,0,0], bMin=[9,9,9,9], pMx=[0,0,0,0], pMn=[99,99,99,99]; let mnT=99, mxT=0;
+    for(let m=0;m<total;m++){ const pts=cur.slice(); let x=m;
       for(let k=0;k<rem.length;k++){ const o=x%3; x=(x-o)/3; const i=rem[k][0], j=rem[k][1];
         if(o===0)pts[i]+=3; else if(o===1)pts[j]+=3; else {pts[i]++;pts[j]++;} }
-      for(let t=0;t<4;t++){ let ab=0,eq=0;
-        for(let u=0;u<4;u++) if(u!==t){ if(pts[u]>pts[t])ab++; else if(pts[u]===pts[t])eq++; }
-        if(ab+eq>maxAE[t])maxAE[t]=ab+eq; if(ab<minAb[t])minAb[t]=ab; } }
-    for(let t=0;t<4;t++) out[teams[t]] = maxAE[t]<=1?'in' : minAb[t]>=3?'out' : 'open';
+      const thr=pts.slice().sort((p,q)=>q-p)[2]; if(thr<mnT)mnT=thr; if(thr>mxT)mxT=thr;
+      for(let t=0;t<4;t++){ let sA=0, wT=0, bT=0;       // strictly-above, worst/best tied-above
+        for(let u=0;u<4;u++) if(u!==t){ if(pts[u]>pts[t])sA++;
+          else if(pts[u]===pts[t]){ const Y=ts[u];
+            if(hasRem[ts[t]]||hasRem[Y]||beats(Y,ts[t])) wT++;
+            if(!hasRem[ts[t]]&&!hasRem[Y]&&beats(Y,ts[t])) bT++; } }
+        if(1+sA+wT>wMax[t])wMax[t]=1+sA+wT; if(1+sA+bT<bMin[t])bMin[t]=1+sA+bT;
+        if(pts[t]>pMx[t])pMx[t]=pts[t]; if(pts[t]<pMn[t])pMn[t]=pts[t]; } }
+    minThird[g]=mnT; maxThird[g]=mxT;
+    for(let t=0;t<4;t++){ const tm=ts[t];
+      mustT2[tm]=wMax[t]<=2; mustT3[tm]=wMax[t]<=3; cantT2[tm]=bMin[t]>=3; cantT3[tm]=bMin[t]>=4;
+      pMax[tm]=pMx[t]; pMin[tm]=pMn[t]; } }
+  // Fully decided group stage: resolve exactly, settling the best-third race on
+  // the real tiebreakers (points, goal difference, goals for, strength).
+  if(!GL.some(g=>D.groups[g].some(t=>hasRem[t]))){
+    const st={}, thirds=[];
+    const cmp=(x,y)=> pMax[y]-pMax[x] || egd[y]-egd[x] || egf[y]-egf[x] || S[y]-S[x];
+    for(const g of GL){ const ord=D.groups[g].slice().sort(cmp);
+      st[ord[0]]='in'; st[ord[1]]='in'; st[ord[3]]='out'; thirds.push(ord[2]); }
+    thirds.sort(cmp).forEach((t,i)=> st[t]= i<8?'in':'out');
+    return st;
   }
-  return out;
+  const status={};
+  for(const g of GL) for(const tm of D.groups[g]){
+    let st = mustT2[tm]?'in' : cantT3[tm]?'out' : 'open';
+    if(st==='open' && cantT2[tm]){ let c=0;            // >=8 groups guaranteed a better third
+      for(const h of GL) if(h!==g && minThird[h]>pMax[tm]) c++; if(c>=8) st='out'; }
+    if(st==='open' && mustT3[tm]){ let c=0;            // <=7 groups could match/beat this third
+      for(const h of GL) if(h!==g && maxThird[h]>=pMin[tm]) c++; if(c<=7) st='in'; }
+    status[tm]=st;
+  }
+  return status;
 }
 function recompute(){ LIVE=liveGroupProbs(SIMN); GUAR=guarantees();
   document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.textContent=fmtPct(sp.dataset.team); }); }
