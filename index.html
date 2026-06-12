@@ -185,37 +185,36 @@ function displayOrders(){
 // fixed seed keeps numbers stable across re-renders (no flicker while typing).
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
-let MDCACHE=null, SGCACHE=null;   // per-match cumulative GD dists + per-group strengths
+let MDCACHE=null;   // per-match cumulative goal-difference distributions
 function liveGroupProbs(N){
-  if(!MDCACHE){ MDCACHE={}; SGCACHE={};
-    for(const g of GL){
+  if(!MDCACHE){ MDCACHE={};
+    for(const g of GL)
       MDCACHE[g]=D.matchDist[g].map(dist=>{ const n=dist.length, gd=new Array(n), cum=new Float64Array(n);
         let c=0; for(let k=0;k<n;k++){ gd[k]=dist[k][0]; c+=dist[k][1]; cum[k]=c; } cum[n-1]=1; return {gd,cum}; });
-      SGCACHE[g]=D.groups[g].map(t=>S[t]);
-    }
   }
   const fixed={};   // entered results -> goal diff (once per compute, not per iteration)
   for(const g of GL) fixed[g]=scores[g].map(sc=>{ const a=+sc.a, b=+sc.b;
     return (sc.a!==''&&sc.b!==''&&a===a&&b===b)? a-b : null; });
   const rng=mulberry32(0x9E3779B1), reach={}, M=GL.length;
   D.teams.forEach(t=>reach[t.name]=0);
-  const pts=[0,0,0,0], gd=[0,0,0,0], ord=[0,0,0,0];
+  const pts=[0,0,0,0], gd=[0,0,0,0], ord=[0,0,0,0], rk=[0,0,0,0];
   const tnm=new Array(M), tp=new Float64Array(M), td=new Float64Array(M), ts=new Float64Array(M), ti=new Array(M);
   for(let it=0; it<N; it++){
     for(let gi=0; gi<M; gi++){
-      const g=GL[gi], teams=D.groups[g], md=MDCACHE[g], fx=fixed[g], sg=SGCACHE[g];
+      const g=GL[gi], teams=D.groups[g], md=MDCACHE[g], fx=fixed[g];
       pts[0]=pts[1]=pts[2]=pts[3]=0; gd[0]=gd[1]=gd[2]=gd[3]=0;
       for(let mi=0; mi<6; mi++){
         const i=PAIRS[mi][0], j=PAIRS[mi][1];
-        let d=fx[mi];
-        if(d===null){ const c=md[mi].cum, n=c.length, u=rng(); let k=0; while(k<n-1 && u>=c[k]) k++; d=md[mi].gd[k]; }
+        const c=md[mi].cum, n=c.length, u=rng(); let k=0; while(k<n-1 && u>=c[k]) k++;  // always draw -> stable stream
+        const d = fx[mi]===null ? md[mi].gd[k] : fx[mi];     // real result overrides the sample
         gd[i]+=d; gd[j]-=d;
         if(d>0) pts[i]+=3; else if(d<0) pts[j]+=3; else { pts[i]++; pts[j]++; }
       }
+      rk[0]=rng(); rk[1]=rng(); rk[2]=rng(); rk[3]=rng();    // lots: break (points, gd) ties at random
       ord[0]=0; ord[1]=1; ord[2]=2; ord[3]=3;
-      ord.sort((x,y)=> pts[y]-pts[x]||gd[y]-gd[x]||sg[y]-sg[x]);
+      ord.sort((x,y)=> pts[y]-pts[x]||gd[y]-gd[x]||rk[y]-rk[x]);
       reach[teams[ord[0]]]++; reach[teams[ord[1]]]++;
-      const t=ord[2]; tnm[gi]=teams[t]; tp[gi]=pts[t]; td[gi]=gd[t]; ts[gi]=sg[t]; ti[gi]=gi;
+      const t=ord[2]; tnm[gi]=teams[t]; tp[gi]=pts[t]; td[gi]=gd[t]; ts[gi]=rng(); ti[gi]=gi;  // random third tiebreak
     }
     ti.sort((x,y)=> tp[y]-tp[x]||td[y]-td[x]||ts[y]-ts[x]);   // 8 best third-placed teams
     for(let k=0;k<8;k++) reach[tnm[ti[k]]]++;
@@ -341,11 +340,13 @@ function fmtPct(t){ const g=GUAR[t];
   return r>=100 ? '>99%' : r<=0 ? '<1%' : r+'%'; }
 // Sound clinch/elimination, so 100% / 0% mean a true guarantee. Per group we
 // enumerate the remaining games' win/draw/loss and bound each team's finishing
-// rank — resolving ties by ACTUAL goal difference once both tied teams have
-// finished (so a decided group reads exactly) and adversarially while games
-// remain. Then a cross-group points-bounds check settles the best-third race for
-// clear cases: a third already beaten by >=8 better thirds is out; one at most 7
-// others can reach is in. Anything still undecided stays 'open' (>99% / <1%).
+// rank, resolving ties by ACTUAL goal difference / goals-for once both tied teams
+// have finished (adversarial while games remain). Strength is NOT a tiebreaker
+// (drawing of lots is not something we model), so teams level on points, goal
+// difference AND goals-for stay 'open' — genuinely undecided (e.g. an all-draws
+// 3/3/3/3 group is four open teams, not two arbitrary 100%s). A cross-group
+// points-bounds check then settles clear best-third cases: a third already beaten
+// by >=8 better thirds is out; one at most 7 others can reach is in.
 function guarantees(){
   const egd={}, egf={}, hasRem={};   // entered goal diff / goals-for; games left?
   for(const g of GL){ const ts=D.groups[g];
@@ -354,7 +355,9 @@ function guarantees(){
       const sc=scores[g][mi], a=+sc.a, b=+sc.b;
       if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ egd[ts[i]]+=a-b; egf[ts[i]]+=a; egd[ts[j]]+=b-a; egf[ts[j]]+=b; }
       else { hasRem[ts[i]]=true; hasRem[ts[j]]=true; } } }
-  const beats=(y,x)=> egd[y]>egd[x] || (egd[y]===egd[x] && (egf[y]>egf[x] || (egf[y]===egf[x] && S[y]>S[x])));
+  // x STRICTLY beats y on the real, modelled tiebreakers (goal diff, then goals
+  // for) — no strength, so equal-on-both is a genuine tie, not a winner.
+  const tb=(x,y)=> egd[x]>egd[y] || (egd[x]===egd[y] && egf[x]>egf[y]);
   const mustT2={}, mustT3={}, cantT2={}, cantT3={}, pMax={}, pMin={}, minThird={}, maxThird={};
   for(const g of GL){ const ts=D.groups[g], cur=[0,0,0,0], rem=[];
     for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
@@ -369,25 +372,15 @@ function guarantees(){
       const thr=pts.slice().sort((p,q)=>q-p)[2]; if(thr<mnT)mnT=thr; if(thr>mxT)mxT=thr;
       for(let t=0;t<4;t++){ let sA=0, wT=0, bT=0;       // strictly-above, worst/best tied-above
         for(let u=0;u<4;u++) if(u!==t){ if(pts[u]>pts[t])sA++;
-          else if(pts[u]===pts[t]){ const Y=ts[u];
-            if(hasRem[ts[t]]||hasRem[Y]||beats(Y,ts[t])) wT++;
-            if(!hasRem[ts[t]]&&!hasRem[Y]&&beats(Y,ts[t])) bT++; } }
+          else if(pts[u]===pts[t]){ const Y=ts[u];      // level on points: tiebreak (no strength)
+            if(hasRem[ts[t]]||hasRem[Y]||!tb(ts[t],Y)) wT++;   // Y above unless we strictly beat it
+            if(!hasRem[ts[t]]&&!hasRem[Y]&&tb(Y,ts[t])) bT++; } } // Y above only if it strictly beats us
         if(1+sA+wT>wMax[t])wMax[t]=1+sA+wT; if(1+sA+bT<bMin[t])bMin[t]=1+sA+bT;
         if(pts[t]>pMx[t])pMx[t]=pts[t]; if(pts[t]<pMn[t])pMn[t]=pts[t]; } }
     minThird[g]=mnT; maxThird[g]=mxT;
     for(let t=0;t<4;t++){ const tm=ts[t];
       mustT2[tm]=wMax[t]<=2; mustT3[tm]=wMax[t]<=3; cantT2[tm]=bMin[t]>=3; cantT3[tm]=bMin[t]>=4;
       pMax[tm]=pMx[t]; pMin[tm]=pMn[t]; } }
-  // Fully decided group stage: resolve exactly, settling the best-third race on
-  // the real tiebreakers (points, goal difference, goals for, strength).
-  if(!GL.some(g=>D.groups[g].some(t=>hasRem[t]))){
-    const st={}, thirds=[];
-    const cmp=(x,y)=> pMax[y]-pMax[x] || egd[y]-egd[x] || egf[y]-egf[x] || S[y]-S[x];
-    for(const g of GL){ const ord=D.groups[g].slice().sort(cmp);
-      st[ord[0]]='in'; st[ord[1]]='in'; st[ord[3]]='out'; thirds.push(ord[2]); }
-    thirds.sort(cmp).forEach((t,i)=> st[t]= i<8?'in':'out');
-    return st;
-  }
   const status={};
   for(const g of GL) for(const tm of D.groups[g]){
     let st = mustT2[tm]?'in' : cantT3[tm]?'out' : 'open';
