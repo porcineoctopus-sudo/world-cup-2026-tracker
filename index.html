@@ -11,8 +11,15 @@
   header { text-align:center; padding:14px 8px 6px; }
   header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
   header p { font-size:11px; margin:3px 0 0; color:var(--mut); }
-  header button { font:inherit; font-size:11px; margin-top:6px; padding:3px 9px;
+  header button { font:inherit; font-size:11px; margin:6px 3px 0; padding:3px 9px;
                   border:1px solid var(--line); background:#fff; border-radius:4px; cursor:pointer; }
+  #sharebox { display:none; margin-top:6px; font-size:11px; color:var(--mut); }
+  #sharebox input { width:min(82vw,520px); font:inherit; font-size:10.5px; padding:2px 5px;
+                    border:1px solid var(--soft); border-radius:4px; margin-top:3px; }
+  #banner { display:none; background:var(--third); border-bottom:1px solid var(--line);
+            text-align:center; font-size:12px; padding:7px 10px; }
+  #banner button { font:inherit; font-size:11px; margin-left:8px; padding:3px 9px;
+                   border:1px solid var(--line); background:#fff; border-radius:4px; cursor:pointer; }
   h2.sec { font-size:13px; text-transform:uppercase; letter-spacing:1px;
            border-bottom:2px solid var(--line); margin:18px 12px 8px; padding-bottom:3px; }
   .fl { font-family:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
@@ -34,6 +41,7 @@
   .matches { margin-top:4px; display:flex; flex-direction:column; gap:1.5px; }
   .m { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; font-size:10.5px; }
   .m .l { text-align:right; } .m .r { text-align:left; }
+  .m .wp { color:var(--soft); font-size:8px; }
   .m input { width:20px; font:inherit; font-size:10.5px; text-align:center; border:1px solid var(--soft);
              border-radius:3px; padding:1px 0; } .m .sc { padding:0 4px; color:var(--mut); }
 
@@ -84,8 +92,11 @@
 <header>
   <h1>FIFA World Cup 2026 — Predictor &amp; Tracker</h1>
   <p>Model-seeded prediction. Enter group scores and the qualification odds update live, accounting for goal difference; click knockout winners through to the final. Saved in your browser.</p>
+  <button onclick="shareBracket()">Share</button>
   <button onclick="resetAll()">Reset all</button>
+  <div id="sharebox"><span id="sharemsg"></span><br><input id="shareurl" readonly onclick="this.select()"></div>
 </header>
+<div id="banner"></div>
 <h2 class="sec">Group stage</h2>
 <div class="groups" id="groups"></div>
 <h2 class="sec">Qualification — who goes through</h2>
@@ -105,14 +116,68 @@ let locks  = load('wc26_locks')  || {};
 let over   = load('wc26_over')   || {};   // {ord:{g:[4 teams]}, thirds:[8 groups]}
 if(!over.ord) over.ord={};
 GL.forEach(g=>{ if(!scores[g]) scores[g]=[0,0,0,0,0,0].map(()=>({a:'',b:''})); });
+// Shared-bracket view: a "#s=..." link loads someone else's bracket WITHOUT touching
+// your own saved one (save() is suppressed while viewing) until you choose to adopt it.
+let viewing=false;
+if(location.hash.indexOf('#s=')===0){
+  try{ const st=decodeState(location.hash.slice(3));
+       scores=st.scores; locks=st.locks; over=st.over; if(!over.ord) over.ord={}; viewing=true; }
+  catch(e){ viewing=false; }
+}
 
 function load(k){ try{ return JSON.parse(localStorage.getItem(k)); }catch(e){ return null; } }
-function save(){ localStorage.setItem('wc26_scores',JSON.stringify(scores));
+function save(){ if(viewing) return;   // never overwrite your own bracket while viewing a shared one
+                 localStorage.setItem('wc26_scores',JSON.stringify(scores));
                  localStorage.setItem('wc26_locks',JSON.stringify(locks));
                  localStorage.setItem('wc26_over',JSON.stringify(over)); }
 function resetAll(){ ['wc26_scores','wc26_locks','wc26_over'].forEach(k=>localStorage.removeItem(k));
                      location.reload(); }
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+// --- Share a bracket as a link. State (scores, knockout picks, overrides) is encoded
+//     compactly into the URL's #hash (teams as indices), which is never sent to any
+//     server. Opening such a link shows that bracket without overwriting your own. ---
+function b64e(s){ return btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+function b64d(s){ return decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')))); }
+function encodeState(){
+  const idx={}; D.teams.forEach((t,i)=>idx[t.name]=i);
+  const sc={}; GL.forEach(g=>{ const o={}; scores[g].forEach((m,i)=>{ if(m.a!==''&&m.b!=='') o[i]=m.a+'-'+m.b; });
+    if(Object.keys(o).length) sc[g]=o; });
+  const lk={}; for(const id in locks){ if(locks[id]!=null && idx[locks[id]]!=null) lk[id]=idx[locks[id]]; }
+  const v={}; if(over.ord && Object.keys(over.ord).length){ v.o={}; for(const g in over.ord) v.o[g]=over.ord[g].map(t=>idx[t]); }
+  if(over.thirds && over.thirds.length) v.t=over.thirds;
+  return b64e(JSON.stringify({s:sc,l:lk,v:v}));
+}
+function decodeState(code){
+  const p=JSON.parse(b64d(code)), nm=D.teams.map(t=>t.name);
+  const sc={}; GL.forEach(g=>{ sc[g]=[0,0,0,0,0,0].map(()=>({a:'',b:''})); });
+  const ps=p.s||{}; for(const g in ps) for(const i in ps[g]){ const ab=ps[g][i].split('-'); if(sc[g]) sc[g][+i]={a:ab[0],b:ab[1]}; }
+  const lk={}, pl=p.l||{}; for(const id in pl){ const n=nm[pl[id]]; if(n!=null) lk[id]=n; }
+  const ov={ord:{}}, pv=p.v||{};
+  if(pv.o) for(const g in pv.o) ov.ord[g]=pv.o[g].map(i=>nm[i]);
+  if(pv.t) ov.thirds=pv.t;
+  return {scores:sc, locks:lk, over:ov};
+}
+function shareBracket(){
+  const url=location.href.split('#')[0]+'#s='+encodeState();   // works for hosted and local file
+  document.getElementById('sharebox').style.display='block';
+  const inp=document.getElementById('shareurl'); inp.value=url; inp.focus(); inp.select();
+  const msg=document.getElementById('sharemsg');
+  if(navigator.clipboard) navigator.clipboard.writeText(url)
+      .then(()=>{ msg.textContent='Link copied — send it to a friend:'; })
+      .catch(()=>{ msg.textContent='Copy this link and send it to a friend:'; });
+  else msg.textContent='Copy this link and send it to a friend:';
+}
+function adoptShared(){ viewing=false; save(); location.hash=''; location.reload(); }  // make the shared bracket yours
+function exitShared(){ location.hash=''; location.reload(); }                           // discard view, restore yours
+function showBanner(){
+  if(!viewing) return;
+  document.querySelectorAll('header button').forEach(b=>b.style.display='none');
+  const b=document.getElementById('banner'); b.style.display='block';
+  b.innerHTML='👀 You’re viewing a <b>shared</b> bracket — your own saved bracket is untouched. '+
+    '<button onclick="adoptShared()">Save as my bracket</button>'+
+    '<button onclick="exitShared()">Back to my bracket</button>';
+}
 function prob(a,b){ return 1/(1+Math.exp(-(S[a]-S[b])/D.scale)); }
 function flag(t){ return '<span class="fl">'+FLAG[t]+'</span>'; }
 
@@ -236,10 +301,14 @@ function renderGroups(){
     }).join('');
     const ts=D.groups[g];
     const ms=PAIRS.map((p,mi)=>{ const a=ts[p[0]],b=ts[p[1]],sc=scores[g][mi];
-      return `<div class="m"><span class="l">${esc(a)} <span class="fl" style="margin:0">${FLAG[a]}</span></span>`+
+      let wa=0,wb=0; D.matchDist[g][mi].forEach(e=>{ if(e[0]>0) wa+=e[1]; else if(e[0]<0) wb+=e[1]; });
+      const played = sc.a!=='' && sc.b!=='';      // model win odds; hidden once a result is in (draw % implied)
+      const pl = played ? '' : `<span class="wp">${Math.round(wa*100)}%</span> `;
+      const pr = played ? '' : ` <span class="wp">${Math.round(wb*100)}%</span>`;
+      return `<div class="m"><span class="l">${pl}${esc(a)} <span class="fl" style="margin:0">${FLAG[a]}</span></span>`+
         `<span class="sc"><input data-g="${g}" data-m="${mi}" data-s="a" value="${sc.a}" inputmode="numeric">`+
         `:<input data-g="${g}" data-m="${mi}" data-s="b" value="${sc.b}" inputmode="numeric"></span>`+
-        `<span class="r">${flag(b)}${esc(b)}</span></div>`; }).join('');
+        `<span class="r">${flag(b)}${esc(b)}${pr}</span></div>`; }).join('');
     return `<div class="card"><h3>Group ${g}${over.ord[g]?' <span class="pk-m">manual</span>':''}</h3>`+
       `<table class="st"><thead><tr><th style="text-align:left">Team · adv%</th><th>Pts</th><th>GD</th><th>GF</th></tr></thead>`+
       `<tbody>${rows}</tbody></table><div class="matches">${ms}</div></div>`;
@@ -422,6 +491,6 @@ function render(){
   if(key){ const el=document.querySelector(`input[data-g="${key[0]}"][data-m="${key[1]}"][data-s="${key[2]}"]`);
            if(el){ el.focus(); try{ el.setSelectionRange(key[3],key[3]); }catch(e){} } }
 }
-LIVE=liveGroupProbs(SIMN); GUAR=guarantees(); render();
+LIVE=liveGroupProbs(SIMN); GUAR=guarantees(); render(); showBanner();
 </script>
 </body></html>
