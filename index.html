@@ -381,13 +381,33 @@ function guarantees(){
     for(let t=0;t<4;t++){ const tm=ts[t];
       mustT2[tm]=wMax[t]<=2; mustT3[tm]=wMax[t]<=3; cantT2[tm]=bMin[t]>=3; cantT3[tm]=bMin[t]>=4;
       pMax[tm]=pMx[t]; pMin[tm]=pMn[t]; } }
+  // A fully decided group with a UNIQUE third place has its third's exact quality
+  // (points, goal diff, goals for) locked, which lets us settle goal-difference
+  // ties between third-placed teams that points alone cannot separate.
+  const lockedThird={};
+  for(const g of GL){ const ts=D.groups[g];
+    if(ts.some(t=>hasRem[t])) continue;
+    const ord=ts.slice().sort((x,y)=> pMax[y]-pMax[x] || egd[y]-egd[x] || egf[y]-egf[x]);
+    const same=(a,b)=> pMax[a]===pMax[b] && egd[a]===egd[b] && egf[a]===egf[b];
+    if(!same(ord[2],ord[1]) && !same(ord[2],ord[3]))
+      lockedThird[g]={team:ord[2], pts:pMax[ord[2]], gd:egd[ord[2]], gf:egf[ord[2]]};
+  }
+  const qbeat=(A,B)=> A.pts>B.pts || (A.pts===B.pts && (A.gd>B.gd || (A.gd===B.gd && A.gf>B.gf)));
+  const qgeq=(A,B)=> !qbeat(B,A);
   const status={};
   for(const g of GL) for(const tm of D.groups[g]){
     let st = mustT2[tm]?'in' : cantT3[tm]?'out' : 'open';
-    if(st==='open' && cantT2[tm]){ let c=0;            // >=8 groups guaranteed a better third
-      for(const h of GL) if(h!==g && minThird[h]>pMax[tm]) c++; if(c>=8) st='out'; }
-    if(st==='open' && mustT3[tm]){ let c=0;            // <=7 groups could match/beat this third
-      for(const h of GL) if(h!==g && maxThird[h]>=pMin[tm]) c++; if(c<=7) st='in'; }
+    const xq = (lockedThird[g] && lockedThird[g].team===tm) ? lockedThird[g] : null;
+    if(st==='open' && cantT2[tm]){ let c=0;            // groups guaranteed a better third
+      for(const h of GL) if(h!==g){
+        if(minThird[h]>pMax[tm]) c++;                                          // strictly more points
+        else if(xq && lockedThird[h] && minThird[h]===pMax[tm] && qbeat(lockedThird[h],xq)) c++; } // both locked, beats on gd/gf
+      if(c>=8) st='out'; }
+    if(st==='open' && mustT3[tm]){ let c=0;            // groups that could match or beat this third
+      for(const h of GL) if(h!==g){
+        if(maxThird[h]>pMin[tm]) c++;                                          // could have more points
+        else if(maxThird[h]===pMin[tm] && (!xq || !lockedThird[h] || qgeq(lockedThird[h],xq))) c++; } // tie on points + unknown/>= gd
+      if(c<=7) st='in'; }
     status[tm]=st;
   }
   return status;
