@@ -469,11 +469,13 @@ function guarantees(){
 // up to that pick, honours the pick, and assigns the upstream odds accordingly —
 // exactly like the group-stage freeze, generalised to every round. resolveResults()
 // builds the displayed bracket (each match's winner = your pick, else the model
-// favourite), then for every pick fixes the spine that delivers its winner down to
-// the R32 ("forced"). forecast() FIXES those forced matches and the projected field,
-// and simulates everything else, giving each team P(reach each stage). A single
-// banner warns when any pick rests on a projected (not entered) upstream; a player
-// who entered every upstream result in order sees no warning.
+// favourite), then for every pick fixes its ENTIRE upstream subtree — both sides,
+// recursively down to the R32 — to that projection ("forced"), so the picked
+// matchup and everything that produced it are locked in. forecast() FIXES those
+// forced matches and the projected field, and simulates everything else (downstream
+// of your picks stays live), giving each team P(reach each stage). A single banner
+// warns when any pick rests on a projected (not entered) upstream; a player who
+// entered every upstream result in order sees no warning.
 function resolveResults(){
   const frozen = Object.keys(locks).some(id=>locks[id]!=null);
   const tied=(a,b)=> !!a&&!!b && a.pts===b.pts && a.gd===b.gd && a.gf===b.gf;
@@ -510,15 +512,15 @@ function resolveResults(){
   for(let L=1;L<KO.length;L++){ const r=KO[L];
     for(let j=0;j<r.pairs.length;j++){ const a=dispW[r.feed+r.pairs[j][0]], b=dispW[r.feed+r.pairs[j][1]];
       dispW[r.tag+j]=winner(a,b,r.tag+j); } }
-  // forced[id] = winner fixed in the forecast. Each pick forces its winner down the
-  // delivering feeder chain to the R32, so the picked team is present in every sim.
+  // forced[id] = winner fixed in the forecast. A pick locks in its displayed matchup
+  // and everything that produced it: fix the whole feeder subtree (both branches) to
+  // the projected/picked winner, recursively to the R32. Downstream stays simulated.
   const forced={};
-  const descend=(tag,idx,W)=>{ forced[tag+idx]=W; if(tag==='r32_') return;
-    const r=lvl[tag], fa=r.feed+r.pairs[idx][0], fb=r.feed+r.pairs[idx][1];
-    if(dispW[fa]===W) descend(r.feed, r.pairs[idx][0], W);
-    else if(dispW[fb]===W) descend(r.feed, r.pairs[idx][1], W); };
+  const forceSub=(tag,idx)=>{ const id=tag+idx; if(id in forced) return; forced[id]=dispW[id];
+    if(tag==='r32_') return;
+    const r=lvl[tag]; forceSub(r.feed, r.pairs[idx][0]); forceSub(r.feed, r.pairs[idx][1]); };
   for(const id in locks){ const W=locks[id]; if(W==null||dispW[id]!==W) continue;
-    const [tag,idx]=parse(id); descend(tag,idx,W); }
+    const [tag,idx]=parse(id); forceSub(tag,idx); }
   // a pick is fully backed by ENTERED results (no projection) iff every match in its
   // supporting subtree is locked, down to pinned group slots.
   const realKO=(tag,idx)=>{ const id=tag+idx;
