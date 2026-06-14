@@ -96,8 +96,6 @@
   table.tbl th.srt:hover { color:var(--ink); }
   table.tbl .tl { text-align:left; }
   table.tbl tbody tr:hover td { background:#f6f6f6; }
-  table.tbl td.spec, table.tbl th.spec { background:#fdeaea; }   /* model forecast, not your picks */
-  table.tbl tbody tr:hover td.spec { background:#f7dede; }
   .tbl-warn { font-size:10.5px; color:#b23; margin:4px 0 2px; }
 </style></head>
 <body>
@@ -384,7 +382,7 @@ function renderPicker(){
 // ONLY the percentage cells — never the score inputs — so it never steals focus
 // (so you can tab through a scoreline like 2 [tab] 0 uninterrupted).
 const SIMN=2000;
-let LIVE={}, GUAR={}, FORE={}, RES={resolved:{},sure:{},elim:{},specCol:6,frozen:false,warn:false}, _rec=null;
+let LIVE={}, GUAR={}, FORE={}, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
 // Display a probability honestly: reserve 100% / 0% for mathematical guarantees
 // (clinched top two / eliminated). A Monte-Carlo estimate that merely *rounds* to
 // 100 or 0 is shown as >99% / <1%, so we never imply certainty we don't have.
@@ -467,18 +465,15 @@ function guarantees(){
   return status;
 }
 // ===== Full-tournament forecast (the bottom table) ============================
-// Two layers. resolveResults() walks the bracket and works out, purely from
-// RESULTS, which outcomes are settled: a knockout pick counts as a result only if
-// both teams in that match are themselves fixed by results (recursively, back to
-// completed groups). Anything else is speculation. forecast() then Monte-Carlos
-// the whole tournament, FIXING the settled results and simulating the rest, giving
-// each team P(reach each stage). Settled cells read 100%/0%; the rest are odds.
-// The columns at/after the earliest speculative pick are flagged, not trusted.
-// Which group outcomes are pinned by RESULTS — entered scores, or the user's
-// finishing-order overrides. Picking any knockout winner "freezes" the current
-// projected field as final (the user's declaration); if that field isn't fully
-// pinned, the table says so (banner). The knockout-vs-knockout recursion is the
-// same either way.
+// One universal rule: a knockout pick ASSUMES the bracket as currently projected
+// up to that pick, honours the pick, and assigns the upstream odds accordingly —
+// exactly like the group-stage freeze, generalised to every round. resolveResults()
+// builds the displayed bracket (each match's winner = your pick, else the model
+// favourite), then for every pick fixes the spine that delivers its winner down to
+// the R32 ("forced"). forecast() FIXES those forced matches and the projected field,
+// and simulates everything else, giving each team P(reach each stage). A single
+// banner warns when any pick rests on a projected (not entered) upstream; a player
+// who entered every upstream result in order sees no warning.
 function resolveResults(){
   const frozen = Object.keys(locks).some(id=>locks[id]!=null);
   const tied=(a,b)=> !!a&&!!b && a.pts===b.pts && a.gd===b.gd && a.gf===b.gf;
@@ -500,29 +495,54 @@ function resolveResults(){
   const r32t=c=>{ const k=c[0], x=c.slice(1);
     if(k==='W') return G1[x]||null; if(k==='R') return G2[x]||null;
     if(!alloc) return null; const grp=alloc[x]; return grp?(G3[grp]||null):null; };
-  const pinned = D.r32.every(m=> r32t(m[0]) && r32t(m[1]));   // field fully decided by results/overrides
-  const part = frozen ? resolveR32() : D.r32.map(m=>[r32t(m[0]), r32t(m[1])]);
-  const resolved={}, sure={}, elim={}; let spec=99;
+  const pin = c => r32t(c)!=null;                      // is this R32 slot decided by results/overrides?
+  const fld = resolveR32();                            // current projected / frozen 32-team field
+  // displayed-bracket winner of every knockout match: your pick if present, else favourite
+  const KO=[ {tag:'r32_',feed:null,pairs:null,col:1},
+             {tag:'r16_',feed:'r32_',pairs:D.r16,col:2},
+             {tag:'qf_', feed:'r16_',pairs:D.qf, col:3},
+             {tag:'sf_', feed:'qf_', pairs:D.sf, col:4},
+             {tag:'final_',feed:'sf_',pairs:[[0,1]],col:5} ];
+  const lvl={}; KO.forEach(r=>lvl[r.tag]=r);
+  const parse=id=>{ const u=id.lastIndexOf('_'); return [id.slice(0,u+1), +id.slice(u+1)]; };
+  const dispW={};
+  for(let i=0;i<16;i++) dispW['r32_'+i]=winner(fld[i][0], fld[i][1], 'r32_'+i);
+  for(let L=1;L<KO.length;L++){ const r=KO[L];
+    for(let j=0;j<r.pairs.length;j++){ const a=dispW[r.feed+r.pairs[j][0]], b=dispW[r.feed+r.pairs[j][1]];
+      dispW[r.tag+j]=winner(a,b,r.tag+j); } }
+  // forced[id] = winner fixed in the forecast. Each pick forces its winner down the
+  // delivering feeder chain to the R32, so the picked team is present in every sim.
+  const forced={};
+  const descend=(tag,idx,W)=>{ forced[tag+idx]=W; if(tag==='r32_') return;
+    const r=lvl[tag], fa=r.feed+r.pairs[idx][0], fb=r.feed+r.pairs[idx][1];
+    if(dispW[fa]===W) descend(r.feed, r.pairs[idx][0], W);
+    else if(dispW[fb]===W) descend(r.feed, r.pairs[idx][1], W); };
+  for(const id in locks){ const W=locks[id]; if(W==null||dispW[id]!==W) continue;
+    const [tag,idx]=parse(id); descend(tag,idx,W); }
+  // a pick is fully backed by ENTERED results (no projection) iff every match in its
+  // supporting subtree is locked, down to pinned group slots.
+  const realKO=(tag,idx)=>{ const id=tag+idx;
+    if(locks[id]==null || dispW[id]!==locks[id]) return false;
+    if(tag==='r32_') return pin(D.r32[idx][0]) && pin(D.r32[idx][1]);
+    const r=lvl[tag]; return realKO(r.feed,r.pairs[idx][0]) && realKO(r.feed,r.pairs[idx][1]); };
+  let warn=false;
+  for(const id in locks){ const W=locks[id]; if(W==null||dispW[id]!==W) continue;
+    const [tag,idx]=parse(id); if(!realKO(tag,idx)){ warn=true; break; } }
+  // sure/elim drive crisp 100% / 0% (vs >99% / <1%) for outcomes certain within the
+  // assumption: the projected field's membership, and the forced spine.
+  const sure={}, elim={};
   D.teams.forEach(t=>{ sure[t.name]=-1; elim[t.name]=99; });
   const sS=(t,c)=>{ if(t&&c>sure[t]) sure[t]=c; };
   const sE=(t,c)=>{ if(t&&c<elim[t]) elim[t]=c; };
-  if(frozen){ const f={}; part.forEach(p=>{ f[p[0]]=1; f[p[1]]=1; });   // frozen field: in -> R32, out -> gone
+  if(frozen){ const f={}; fld.forEach(p=>{ f[p[0]]=1; f[p[1]]=1; });   // assumed field: in -> R32, out -> gone
     D.teams.forEach(t=>{ if(f[t.name]) sS(t.name,0); else sE(t.name,0); }); }
   else { for(const t in GUAR){ if(GUAR[t]==='in') sS(t,0); else if(GUAR[t]==='out') sE(t,0); } }
-  const r32w=new Array(16);
-  for(let i=0;i<16;i++){ const a=part[i][0], b=part[i][1], id='r32_'+i, lk=locks[id];
-    sS(a,0); sS(b,0);
-    if(a&&b&&(lk===a||lk===b)){ resolved[id]=lk; r32w[i]=lk; sS(lk,1); sE(lk===a?b:a,1); }
-    else { r32w[i]=null; if(lk!=null && !(a&&b)) spec=Math.min(spec,0); } }
-  let prev=r32w;
-  for(const [pairs,tag,round] of [[D.r16,'r16_',1],[D.qf,'qf_',2],[D.sf,'sf_',3],[[[0,1]],'final_',4]]){
-    const out=new Array(pairs.length);
-    for(let j=0;j<pairs.length;j++){ const a=prev[pairs[j][0]], b=prev[pairs[j][1]], id=tag+j, lk=locks[id];
-      sS(a,round); sS(b,round);
-      if(a&&b&&(lk===a||lk===b)){ resolved[id]=lk; out[j]=lk; sS(lk,round+1); sE(lk===a?b:a,round+1); }
-      else { out[j]=null; if(lk!=null && !(a&&b)) spec=Math.min(spec,round); } }
-    prev=out; }
-  RES={resolved, sure, elim, specCol: spec===99?6:spec+1, frozen, warn: frozen && !pinned};
+  for(const id in forced){ const W=forced[id], [tag,idx]=parse(id), r=lvl[tag];
+    sS(W, r.col);                                      // forced winner reaches the next round for sure
+    if(tag==='r32_'){ const a=fld[idx][0], b=fld[idx][1], L=(a===W)?b:(b===W?a:null); if(L) sE(L, r.col); }
+    else { const wa=forced[r.feed+r.pairs[idx][0]], wb=forced[r.feed+r.pairs[idx][1]];
+      const opp=(wa===W)?wb:(wb===W?wa:null); if(opp) sE(opp, r.col); } }   // forced loser eliminated for sure
+  RES={resolved: forced, sure, elim, frozen, warn};
 }
 // One Monte-Carlo serves BOTH the group-stage cards and the full forecast table,
 // so the "reach R32" number is identical in both places (no twin estimates). Each
@@ -583,7 +603,7 @@ function forecast(N){
 // column; dir +1 ascending / -1 descending. Default: champion odds, highest first.
 let tblSort={col:5, dir:-1};
 function renderTable(F){
-  const COLS=['R32','R16','QF','SF','Final','Champ'], sc=RES.specCol;
+  const COLS=['R32','R16','QF','SF','Final','Champ'];
   const fmt=(t,c)=>{ if(c<=RES.sure[t]) return '100%'; if(c>=RES.elim[t]) return '0%';
     const r=Math.round((F[t]?F[t][c]:0)*100); return r>=100?'>99%':r<=0?'<1%':r+'%'; };
   // sort key matches the *displayed* value: guarantees read as 1, eliminations as 0.
@@ -594,17 +614,15 @@ function renderTable(F){
     const d=key(x.name,col)-key(y.name,col);
     if(d) return dir*d;                                  // tie-break: deeper stage, then strength
     return F[y.name][5]-F[x.name][5]||F[y.name][4]-F[x.name][4]||S[y.name]-S[x.name]; });
-  const cls=c=> c>=sc?' class="spec"':'';
   const arrow=c=> c===col?(dir<0?' ▾':' ▴'):'';
   const head='<tr><th class="tl srt" data-sc="-1">Team'+arrow(-1)+'</th>'+
-    COLS.map((c,i)=>`<th class="srt${c>=sc?' spec':''}" data-sc="${i}">${c}${arrow(i)}</th>`).join('')+'</tr>';
+    COLS.map((c,i)=>`<th class="srt" data-sc="${i}">${c}${arrow(i)}</th>`).join('')+'</tr>';
   const body=rows.map(t=>`<tr><td class="tl">${flag(t.name)}${esc(t.name)}</td>`+
-    [0,1,2,3,4,5].map(c=>`<td${cls(c)}>${fmt(t.name,c)}</td>`).join('')+'</tr>').join('');
-  let notes='';
-  if(RES.warn) notes += '<div class="tbl-warn">🔒 The group stage isn’t fully entered, so your knockout picks treat the '+
-    'current projected qualifiers as final here. Enter the remaining group results (or set them in the picker above) for a live forecast.</div>';
-  if(sc<6) notes += '<div class="tbl-warn">⚠ Some knockout picks run ahead of their earlier rounds — the shaded columns are the model’s forecast, not your picks.</div>';
-  document.getElementById('forecast').innerHTML = notes+`<table class="tbl"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    [0,1,2,3,4,5].map(c=>`<td>${fmt(t.name,c)}</td>`).join('')+'</tr>').join('');
+  const note = RES.warn ? '<div class="tbl-warn">🔒 Your knockout picks assume the bracket as currently projected up to '+
+    'that round (including the current group-stage qualifiers). Enter the earlier results — or set them in the picker above '+
+    '— for a live forecast.</div>' : '';
+  document.getElementById('forecast').innerHTML = note+`<table class="tbl"><thead>${head}</thead><tbody>${body}</tbody></table>`;
   document.querySelectorAll('#forecast th.srt').forEach(th=>th.addEventListener('click',()=>{
     const c=+th.dataset.sc;
     if(c===tblSort.col) tblSort.dir=-tblSort.dir;        // same column -> flip direction
