@@ -606,14 +606,17 @@ function renderTable(F){
   const COLS=['R32','R16','QF','SF','Final','Champ'];
   const fmt=(t,c)=>{ if(c<=RES.sure[t]) return '100%'; if(c>=RES.elim[t]) return '0%';
     const r=Math.round((F[t]?F[t][c]:0)*100); return r>=100?'>99%':r<=0?'<1%':r+'%'; };
-  // sort key matches the *displayed* value: guarantees read as 1, eliminations as 0.
-  const key=(t,c)=> c<=RES.sure[t]?1 : c>=RES.elim[t]?0 : (F[t]?F[t][c]:0);
+  // sort key mirrors the displayed tiers, with out-of-band sentinels so certain
+  // 100% sits above >99% and certain 0% sits below <1% (a simulated 0 that isn't
+  // a guaranteed elimination keeps its raw value and so ranks above a true 0%).
+  const key=(t,c)=> c<=RES.sure[t]?2 : c>=RES.elim[t]?-1 : (F[t]?F[t][c]:0);
   const {col,dir}=tblSort;
+  // Ties on the chosen column cascade to the preceding columns in order (Champ ->
+  // Final -> ... -> R32), then alphabetically for a stable, predictable order.
   const rows=D.teams.slice().sort((x,y)=>{
     if(col<0) return dir*x.name.localeCompare(y.name);
-    const d=key(x.name,col)-key(y.name,col);
-    if(d) return dir*d;                                  // tie-break: deeper stage, then strength
-    return F[y.name][5]-F[x.name][5]||F[y.name][4]-F[x.name][4]||S[y.name]-S[x.name]; });
+    for(let c=col;c>=0;c--){ const d=key(x.name,c)-key(y.name,c); if(d) return dir*d; }
+    return x.name.localeCompare(y.name); });
   const arrow=c=> c===col?(dir<0?' ▾':' ▴'):'';
   const head='<tr><th class="tl srt" data-sc="-1">Team'+arrow(-1)+'</th>'+
     COLS.map((c,i)=>`<th class="srt" data-sc="${i}">${c}${arrow(i)}</th>`).join('')+'</tr>';
