@@ -205,26 +205,61 @@ function standings(g){
   st.sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]);
   return st;
 }
+// PROJECTED final standings: actual points/goals from played matches, plus the
+// EXPECTED points and goal difference from each team's remaining matches, read
+// straight from the embedded per-match margin model (D.matchDist) — the same
+// distributions behind the win-% and the Monte-Carlo. No new model: just
+// E[pts] = 3·P(win) + 1·P(draw) per unplayed game. This is what seeds the
+// knockout bracket (and the picker defaults), so an early upset that tops a group
+// doesn't get read as the likely final order. Equals standings() once a group is
+// complete. The GROUP CARDS deliberately keep the literal live standings.
+function projStandings(g){
+  const st=D.groups[g].map(t=>({team:t,pts:0,gf:0,ga:0,egd:0}));
+  scores[g].forEach((sc,mi)=>{
+    const [i,j]=PAIRS[mi], a=parseInt(sc.a), b=parseInt(sc.b);
+    if(!isNaN(a)&&!isNaN(b)){                         // played -> actual
+      st[i].gf+=a; st[i].ga+=b; st[j].gf+=b; st[j].ga+=a;
+      if(a>b)st[i].pts+=3; else if(b>a)st[j].pts+=3; else {st[i].pts++;st[j].pts++;}
+    } else {                                          // unplayed -> expected (gd>0 means side i wins)
+      let pw=0,pd=0,eg=0; D.matchDist[g][mi].forEach(e=>{ const d=e[0],p=e[1];
+        if(d>0)pw+=p; else if(d===0)pd+=p; eg+=d*p; });
+      st[i].pts+=3*pw+pd; st[j].pts+=3*(1-pw-pd)+pd; st[i].egd+=eg; st[j].egd-=eg;
+    }
+  });
+  st.forEach(s=>s.gd=(s.gf-s.ga)+s.egd);
+  st.sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]);
+  return st;
+}
 // Effective finishing order for a group: the manual override if set, else the
 // auto standings (team names, best-to-worst). The 4th place is retained so an
 // override stays a valid permutation even though only 1st/2nd/3rd are picked.
+// effOrder/effThirdGroups read the LIVE standings (the group cards); the proj*
+// twins read projStandings (the knockout bracket + picker defaults).
 function effOrder(g){ return over.ord[g] ? over.ord[g].slice() : standings(g).map(s=>s.team); }
+function projOrder(g){ return over.ord[g] ? over.ord[g].slice() : projStandings(g).map(s=>s.team); }
 function thirdOf(g){ const team=effOrder(g)[2];
   const s=standings(g).find(x=>x.team===team)||{pts:0,gd:0,gf:0};
+  return {team, group:g, pts:s.pts, gd:s.gd, gf:s.gf}; }
+function projThirdOf(g){ const team=projOrder(g)[2];
+  const s=projStandings(g).find(x=>x.team===team)||{pts:0,gd:0,gf:0};
   return {team, group:g, pts:s.pts, gd:s.gd, gf:s.gf}; }
 // Auto best-8 third-placed groups, FIFA-style (pts, gd, gf; strength as last resort).
 function autoThirds(){ return GL.map(thirdOf)
   .sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]).slice(0,8).map(t=>t.group); }
-// thirdSelection = what the picker shows; effThirdGroups = what the bracket uses
-// (an override only takes effect once exactly 8 groups are chosen).
-function thirdSelection(){ return over.thirds ? over.thirds.slice() : autoThirds(); }
+function projAutoThirds(){ return GL.map(projThirdOf)
+  .sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]).slice(0,8).map(t=>t.group); }
+// effThirdGroups = live best-8 thirds for the group-card highlight. projThird*
+// = projected, for the picker (what it shows / starts editing from) and the
+// bracket. An override only takes effect once exactly 8 groups are chosen.
 function effThirdGroups(){ return (over.thirds && over.thirds.length===8) ? over.thirds.slice() : autoThirds(); }
-function resolveR32(){
-  const q=effThirdGroups(), key=q.slice().sort().join('');
-  const assign=D.thirdAssign[key]||{}, byGroup={}; q.forEach(g=>byGroup[g]=effOrder(g)[2]);
+function projThirdSelection(){ return over.thirds ? over.thirds.slice() : projAutoThirds(); }
+function projThirdGroups(){ return (over.thirds && over.thirds.length===8) ? over.thirds.slice() : projAutoThirds(); }
+function resolveR32(){                                // seeded from PROJECTED final standings
+  const q=projThirdGroups(), key=q.slice().sort().join('');
+  const assign=D.thirdAssign[key]||{}, byGroup={}; q.forEach(g=>byGroup[g]=projOrder(g)[2]);
   const R=c=>{ const k=c[0], g=c.slice(1);          // g is a group (W/R) or a slot (T)
     if(k==='T') return byGroup[assign[g]];
-    const o=effOrder(g); return k==='W'?o[0]:o[1]; };
+    const o=projOrder(g); return k==='W'?o[0]:o[1]; };
   return D.r32.map(([a,b])=>[R(a),R(b)]);
 }
 function winner(a,b,id){ let w=locks[id]; if(w!==a&&w!==b) w=prob(a,b)>=0.5?a:b; return w; }
@@ -339,9 +374,9 @@ function renderBracket(){
 // force each group's 1st/2nd/3rd and confirm the official best-eight thirds — the
 // finer FIFA tiebreakers (head-to-head, fair play, lots) we deliberately don't track.
 function renderPicker(){
-  const sel=thirdSelection(), selSet=new Set(sel);
+  const sel=projThirdSelection(), selSet=new Set(sel);   // defaults = projected final standings
   const groupCtrls=GL.map(g=>{
-    const o=effOrder(g), manual=!!over.ord[g];
+    const o=projOrder(g), manual=!!over.ord[g];
     const opt=slot=>D.groups[g].map(t=>`<option value="${esc(t)}" ${t===o[slot]?'selected':''}>${esc(t)}</option>`).join('');
     const row=(slot,lab)=>`<label class="pk-s">${lab}<select data-g="${g}" data-slot="${slot}">${opt(slot)}</select></label>`;
     return `<div class="pk-g"><div class="pk-h">Group ${g}`+
@@ -349,7 +384,7 @@ function renderPicker(){
       `</div>${row(0,'1st')}${row(1,'2nd')}${row(2,'3rd')}</div>`;
   }).join('');
   const boxes=GL.map(g=>{
-    const team=effOrder(g)[2], on=selSet.has(g), dis=(!on&&selSet.size>=8)?'disabled':'';
+    const team=projOrder(g)[2], on=selSet.has(g), dis=(!on&&selSet.size>=8)?'disabled':'';
     return `<label class="pk-c${on?' on':''}"><input type="checkbox" data-third="${g}" ${on?'checked':''} ${dis}> `+
       `${g} · ${flag(team)}${esc(team)}</label>`;
   }).join('');
@@ -363,7 +398,7 @@ function renderPicker(){
     `</div><div class="pk-boxes">${boxes}</div></div>`;
   document.querySelectorAll('#picker select').forEach(s=>s.addEventListener('change',e=>{
     const g=e.target.dataset.g, p=+e.target.dataset.slot, X=e.target.value;
-    const cur=effOrder(g).slice(), i=cur.indexOf(X); cur[i]=cur[p]; cur[p]=X;  // swap into place
+    const cur=projOrder(g).slice(), i=cur.indexOf(X); cur[i]=cur[p]; cur[p]=X;  // swap into place
     over.ord[g]=cur; save(); render();
   }));
   document.querySelectorAll('#picker [data-auto-g]').forEach(b=>b.addEventListener('click',()=>{
@@ -372,7 +407,7 @@ function renderPicker(){
   if(ath) ath.addEventListener('click',()=>{ delete over.thirds; save(); render(); });
   document.querySelectorAll('#picker [data-third]').forEach(c=>c.addEventListener('change',e=>{
     const g=e.target.dataset.third;
-    let cur = over.thirds ? over.thirds.slice() : autoThirds();
+    let cur = over.thirds ? over.thirds.slice() : projAutoThirds();   // start from the projected default
     if(e.target.checked){ if(!cur.includes(g)) cur.push(g); } else cur=cur.filter(x=>x!==g);
     over.thirds=cur; save(); render();
   }));
