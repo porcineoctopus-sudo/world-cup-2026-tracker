@@ -95,6 +95,12 @@
   .sc-c { color:var(--mut); } .sc-c b { color:var(--ink); font-size:14px; margin-left:2px; }
   .sc-c.win { color:var(--advln); } .sc-c.win b { color:var(--advln); }
   .sc-n { font-size:9.5px; color:var(--soft); }
+  .viewtoggle:not(:empty) { display:inline-flex; align-items:center; gap:6px; margin:0 12px 10px; font-size:11px; }
+  .vt-lab { font-size:9px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); margin-right:2px; }
+  .vt-btn { font:inherit; font-size:10.5px; padding:2px 9px; border:1px solid var(--line); background:#fff;
+            cursor:pointer; color:var(--mut); }
+  .vt-btn:first-of-type { border-radius:4px 0 0 4px; } .vt-btn:last-of-type { border-radius:0 4px 4px 0; border-left:none; }
+  .vt-btn.on { background:var(--ink); color:#fff; }
   .sf-wrap { display:flex; gap:16px; align-items:flex-start; padding:0 12px 24px; flex-wrap:wrap; }
   .sf-wrap .tablewrap { padding:0; flex:2 1 360px; }
   .strengths { flex:1 1 320px; font-size:10.5px; }
@@ -154,6 +160,7 @@
 <h2 class="sec">Team strength &amp; full forecast</h2>
 <p class="sf-note">Drag a team's slider to set <em>your</em> view of its strength — the model's value is marked on the track (↺ resets it). The whole forecast updates to match. Sliders are capped to keep things realistic.</p>
 <div id="scorecard" class="scorecard"></div>
+<div id="viewtoggle" class="viewtoggle"></div>
 <div class="sf-wrap">
   <div id="strengths" class="strengths"></div>
   <div id="forecast" class="tablewrap"></div>
@@ -171,7 +178,10 @@ let scores = load('wc26_scores') || {};
 let locks  = load('wc26_locks')  || {};
 let over   = load('wc26_over')   || {};   // {ord:{g:[4 teams]}, thirds:[8 groups]}
 let strOver = load('wc26_str') || {};     // team -> user-set strength, overriding the model
-function applyStr(){ for(const t in S0) S[t] = (t in strOver) ? strOver[t] : S0[t]; }
+let view='mine';                          // forecast view: "mine" or "model" (see the toggle)
+function Suser(t){ return (t in strOver) ? strOver[t] : S0[t]; }   // your effective strength (panel/scorecard)
+function applyStr(){ const m=view==='model';                       // active strengths drive all rendering
+  for(const t in S0) S[t] = m ? S0[t] : Suser(t); }
 applyStr();
 if(!over.ord) over.ord={};
 GL.forEach(g=>{ if(!scores[g]) scores[g]=[0,0,0,0,0,0].map(()=>({a:'',b:''})); });
@@ -196,7 +206,8 @@ function resetAll(){ ['wc26_scores','wc26_locks','wc26_over','wc26_str'].forEach
 // Strength-editor engine API (PR 2 wires the UI to these). Setting/clearing an
 // override recomputes effective strengths and invalidates the match-curve cache.
 function setStrength(t,v){ strOver[t]=v; applyStr(); invalidateMD(); save(); }
-function clearStrength(t){ delete strOver[t]; applyStr(); invalidateMD(); save(); }
+function clearStrength(t){ delete strOver[t]; if(!Object.keys(strOver).length) view='mine';   // nothing to compare
+  applyStr(); invalidateMD(); save(); }
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 
 // --- Share a bracket as a link. State (scores, knockout picks, overrides) is encoded
@@ -263,7 +274,8 @@ function gdDist(sa,sb){ const [pw,pd,pl]=groupWDL(sa,sb), r=D.marginDecay, k=D.k
 // at their model strength (baseline stays byte-identical), recomputed only when a
 // team has been overridden.
 function matchDistOf(g,mi){ const ts=D.groups[g], a=ts[PAIRS[mi][0]], b=ts[PAIRS[mi][1]];
-  return (a in strOver || b in strOver) ? gdDist(S[a],S[b]) : D.matchDist[g][mi]; }
+  // model view -> always the embedded baseline curve; mine -> recompute if overridden
+  return (view!=='model' && (a in strOver || b in strOver)) ? gdDist(S[a],S[b]) : D.matchDist[g][mi]; }
 
 function standings(g){
   const st=D.groups[g].map(t=>({team:t,pts:0,gf:0,ga:0,gd:0}));
@@ -491,6 +503,10 @@ function renderPicker(){
 // (so you can tab through a scoreline like 2 [tab] 0 uninterrupted).
 const SIMN=2000;
 let LIVE={}, GUAR={}, FORE={}, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
+// `view` ("mine"/"model", declared up top) flips ALL strength-derived output
+// together -- group win-%, projected standings, bracket and the table -- so they
+// stay consistent. The strength panel and the scorecard's "you" side always
+// reflect YOUR edits, regardless of the view.
 // Display a probability honestly: reserve 100% / 0% for mathematical guarantees
 // (clinched top two / eliminated). A Monte-Carlo estimate that merely *rounds* to
 // 100 or 0 is shown as >99% / <1%, so we never imply certainty we don't have.
@@ -748,10 +764,21 @@ function renderTable(F){
     renderTable(F); }));
   if(typeof syncStrHead==='function') syncStrHead();     // keep the strength panel header aligned
 }
-function recompute(){ GUAR=guarantees(); resolveResults();
-  const f=forecast(SIMN); FORE=f.table; LIVE=f.group;   // one MC feeds both cards and table
+function recompute(){ GUAR=guarantees(); resolveResults();   // all under the active view's strengths (S)
+  const f=forecast(SIMN); FORE=f.table; LIVE=f.group;        // one MC feeds both cards and table
   document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.textContent=fmtPct(sp.dataset.team); });
-  renderTable(FORE); }
+  renderTable(FORE); renderViewToggle(); }
+// The toggle shows only once you've edited a strength (otherwise the views are
+// identical). Switching flips the active strengths and re-renders everything.
+function renderViewToggle(){
+  const el=document.getElementById('viewtoggle'); if(!el) return;
+  if(!Object.keys(strOver).length){ el.innerHTML=''; return; }
+  el.innerHTML = `<span class="vt-lab">Forecast by</span>`+
+    `<button class="vt-btn${view==='mine'?' on':''}" data-v="mine">My strengths</button>`+
+    `<button class="vt-btn${view==='model'?' on':''}" data-v="model">Model</button>`;
+  el.querySelectorAll('.vt-btn').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.v)));
+}
+function setView(v){ if(v===view) return; view=v; applyStr(); invalidateMD(); render(); recompute(); }
 function scheduleRecompute(){ if(_rec) clearTimeout(_rec); _rec=setTimeout(recompute, 200); }
 
 // ===== Team-strength editor =================================================
@@ -811,6 +838,7 @@ function updateStrRow(t,v){ const row=document.querySelector(`#strengths .str-ro
 // teams' strengths, so no Monte-Carlo / no pre-result reconstruction is needed.
 function brierPts(p, o){ let s=0; for(let k=0;k<p.length;k++){ const d=p[k]-(k===o?1:0); s+=d*d; } return s; }
 function scorecard(){
+  const sv=view; if(sv!=='mine'){ view='mine'; applyStr(); }   // always score YOUR strengths vs the model's
   let bm=0, by=0, n=0;
   const pr=(sa,sb)=>1/(1+Math.exp(-(sa-sb)/D.scale));   // logistic win prob, explicit strengths
   for(const g of GL){ const ts=D.groups[g];             // group games: home win / draw / away win
@@ -818,11 +846,12 @@ function scorecard(){
       if(sc.a===''||sc.b===''||a!==a||b!==b) return;
       const ta=ts[PAIRS[mi][0]], tb=ts[PAIRS[mi][1]], o=a>b?0:a<b?2:1;
       bm+=brierPts(groupWDL(S0[ta],S0[tb]),o); by+=brierPts(groupWDL(S[ta],S[tb]),o); n++; }); }
-  const bk=bracket();                                   // knockout picks: 2-way, winner is index 0
+  const bk=bracket();                                   // knockout picks (your bracket): 2-way, winner is index 0
   for(const m of [...bk.r32,...bk.r16,...bk.qf,...bk.sf,...bk.fin]){ const W=locks[m.id];
     if(W==null||!m.a||!m.b||(W!==m.a&&W!==m.b)) continue;
     const L=(W===m.a)?m.b:m.a, pm=pr(S0[W],S0[L]), pu=pr(S[W],S[L]);
     bm+=brierPts([pm,1-pm],0); by+=brierPts([pu,1-pu],0); n++; }
+  if(sv!=='mine'){ view=sv; applyStr(); }               // restore the displayed view's strengths
   if(!n) return {n:0};
   return {n, model:100*(1-bm/n/2), you:100*(1-by/n/2)};   // avg Brier (0..2) -> points 0..100
 }
@@ -850,8 +879,7 @@ function render(){
   if(key){ const el=document.querySelector(`input[data-g="${key[0]}"][data-m="${key[1]}"][data-s="${key[2]}"]`);
            if(el){ el.focus(); try{ el.setSelectionRange(key[3],key[3]); }catch(e){} } }
 }
-GUAR=guarantees(); resolveResults();
-{ const f=forecast(SIMN); FORE=f.table; LIVE=f.group; }
-render(); renderStrengths(); renderTable(FORE); showBanner();
+recompute();                       // sets LIVE + both forecast views + renders the table
+render(); renderStrengths(); showBanner();
 </script>
 </body></html>
