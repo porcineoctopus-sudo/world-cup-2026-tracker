@@ -38,6 +38,8 @@
   tr.adv td { background:var(--adv); } tr.adv td.t { box-shadow:inset 3px 0 var(--advln); }
   tr.third td { background:var(--third); }
   .pa { color:var(--mut); font-size:9.5px; }
+  .ck { color:#1a8a3c; font-weight:700; font-size:11px; }   /* clinched: green check */
+  .cx { color:#c0392b; font-weight:700; font-size:11px; }   /* eliminated: red cross */
   .matches { margin-top:4px; display:flex; flex-direction:column; gap:1.5px; }
   .m { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; font-size:10.5px; }
   .m .l { text-align:right; } .m .r { text-align:left; }
@@ -287,6 +289,46 @@ function matchDistOf(g,mi){ const ts=D.groups[g], a=ts[PAIRS[mi][0]], b=ts[PAIRS
   // model view -> always the embedded baseline curve; mine -> recompute if overridden
   return (view!=='model' && (a in strOver || b in strOver)) ? gdDist(S[a],S[b]) : D.matchDist[g][mi]; }
 
+// FIFA group tie-break, applying every criterion we can model: points, then for
+// teams level on points the head-to-head mini-league (points, goal difference, then
+// goals scored in matches AMONG those teams, re-applied to any still-level subset),
+// then overall goal difference and overall goals. Returns ordered "tiers" -- teams in
+// the same tier are level on everything we model (fair play and drawing of lots are
+// out of scope, so a tier of >1 is a genuine tie, not a ranking). `stat` carries each
+// team's overall {pts, gd, gf}; head-to-head is read from the actual played scores.
+function fifaTiers(g, stat){
+  const ts=D.groups[g], played=[];
+  scores[g].forEach((sc,mi)=>{ const a=parseInt(sc.a), b=parseInt(sc.b);
+    if(!isNaN(a)&&!isNaN(b)) played.push({a:ts[PAIRS[mi][0]], b:ts[PAIRS[mi][1]], ga:a, gb:b}); });
+  const h2h=set=>{ const inSet=new Set(set), t={};                 // mini-table over matches among `set`
+    set.forEach(tm=>t[tm]={pts:0,gd:0,gf:0});
+    played.forEach(m=>{ if(inSet.has(m.a)&&inSet.has(m.b)){
+      t[m.a].gf+=m.ga; t[m.b].gf+=m.gb; t[m.a].gd+=m.ga-m.gb; t[m.b].gd+=m.gb-m.ga;
+      if(m.ga>m.gb)t[m.a].pts+=3; else if(m.gb>m.ga)t[m.b].pts+=3; else {t[m.a].pts++; t[m.b].pts++;} } });
+    return t; };
+  const runs=(arr,eq)=>{ const out=[]; let cur=[arr[0]];
+    for(let k=1;k<arr.length;k++){ if(eq(arr[k-1],arr[k])) cur.push(arr[k]); else {out.push(cur); cur=[arr[k]];} }
+    out.push(cur); return out; };
+  function resolve(cl){                                            // cl: teams level on points
+    if(cl.length<=1) return [cl];
+    const t=h2h(cl);
+    const s=cl.slice().sort((x,y)=> t[y].pts-t[x].pts || t[y].gd-t[x].gd || t[y].gf-t[x].gf);
+    const subs=runs(s,(x,y)=> t[x].pts===t[y].pts && t[x].gd===t[y].gd && t[x].gf===t[y].gf);
+    if(subs.length>1){ const out=[]; subs.forEach(sub=> out.push(...resolve(sub))); return out; }  // re-apply a-c
+    const s2=cl.slice().sort((x,y)=> stat[y].gd-stat[x].gd || stat[y].gf-stat[x].gf);   // d-e: overall gd, goals
+    return runs(s2,(x,y)=> stat[x].gd===stat[y].gd && stat[x].gf===stat[y].gf);
+  }
+  const tiers=[];
+  runs(ts.slice().sort((x,y)=> stat[y].pts-stat[x].pts), (x,y)=> stat[x].pts===stat[y].pts)
+    .forEach(c=> tiers.push(...resolve(c)));
+  return tiers;
+}
+// Flatten the tiers into a finishing order, breaking only genuine ties (teams level
+// on every modelled criterion) by strength -- a deterministic display guess, never
+// a clinch (guarantees() keeps such teams 'open').
+function fifaOrder(g, stat){ const order=[];
+  fifaTiers(g, stat).forEach(tier=> tier.slice().sort((x,y)=> S[y]-S[x]).forEach(tm=> order.push(tm)));
+  return order; }
 function standings(g){
   const st=D.groups[g].map(t=>({team:t,pts:0,gf:0,ga:0,gd:0}));
   scores[g].forEach((sc,mi)=>{
@@ -296,8 +338,8 @@ function standings(g){
     if(a>b)st[i].pts+=3; else if(b>a)st[j].pts+=3; else {st[i].pts++;st[j].pts++;}
   });
   st.forEach(s=>s.gd=s.gf-s.ga);
-  st.sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]);
-  return st;
+  const stat={}; st.forEach(s=>stat[s.team]=s);
+  return fifaOrder(g, stat).map(tm=>stat[tm]);
 }
 // PROJECTED final standings: actual points/goals from played matches, plus the
 // EXPECTED points and goal difference from each team's remaining matches, read
@@ -321,8 +363,8 @@ function projStandings(g){
     }
   });
   st.forEach(s=>s.gd=(s.gf-s.ga)+s.egd);
-  st.sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]);
-  return st;
+  const stat={}; st.forEach(s=>stat[s.team]=s);   // head-to-head from actual results; gd/gf are projected
+  return fifaOrder(g, stat).map(tm=>stat[tm]);
 }
 // Effective finishing order for a group: the manual override if set, else the
 // auto standings (team names, best-to-worst). The 4th place is retained so an
@@ -467,7 +509,7 @@ function renderBracket(){
 }
 // Collapsible qualification picker: seeded from the live standings, lets the user
 // force each group's 1st/2nd/3rd and confirm the official best-eight thirds — the
-// finer FIFA tiebreakers (head-to-head, fair play, lots) we deliberately don't track.
+// last-resort FIFA tiebreakers (fair play, drawing of lots) we don't track.
 function renderPicker(){
   const sel=projThirdSelection(), selSet=new Set(sel);   // defaults = projected final standings
   const groupCtrls=GL.map(g=>{
@@ -485,7 +527,7 @@ function renderPicker(){
   }).join('');
   const n=sel.length;
   document.getElementById('picker').innerHTML=
-    `<p class="pk-note">Auto-filled from your scores. Goal difference and goals are computed, but head-to-head, fair-play points and drawing of lots are not — override the finishing order where those decide it, then confirm the official best eight third-placed teams.</p>`+
+    `<p class="pk-note">Auto-filled from your scores. Head-to-head, goal difference and goals are all computed; only fair-play points and drawing of lots are not — override the finishing order where those decide it, then confirm the official best eight third-placed teams.</p>`+
     `<div class="pk-grid">${groupCtrls}</div>`+
     `<div class="pk-th"><div class="pk-h">Best third-placed teams — pick exactly 8 `+
     `<span class="pk-cnt ${n===8?'ok':'bad'}">${n}/8</span>`+
@@ -520,8 +562,12 @@ let LIVE={}, GUAR={}, FORE={}, RES={resolved:{},sure:{},elim:{},frozen:false,war
 // Display a probability honestly: reserve 100% / 0% for mathematical guarantees
 // (clinched top two / eliminated). A Monte-Carlo estimate that merely *rounds* to
 // 100 or 0 is shown as >99% / <1%, so we never imply certainty we don't have.
+// Certainty reads as an icon, not 100%/0% (which we reserve for true guarantees):
+// a green check for clinched, a red cross for eliminated.
+const CK='<span class="ck" title="clinched">✓</span>';
+const CX='<span class="cx" title="eliminated">✗</span>';
 function fmtPct(t){ const g=GUAR[t];
-  if(g==='in') return '100%'; if(g==='out') return '0%';
+  if(g==='in') return CK; if(g==='out') return CX;
   const r=Math.round((LIVE[t]||0)*100);
   return r>=100 ? '>99%' : r<=0 ? '<1%' : r+'%'; }
 // Sound clinch/elimination, so 100% / 0% mean a true guarantee. Per group we
@@ -534,33 +580,52 @@ function fmtPct(t){ const g=GUAR[t];
 // points-bounds check then settles clear best-third cases: a third already beaten
 // by >=8 better thirds is out; one at most 7 others can reach is in.
 function guarantees(){
-  const egd={}, egf={}, hasRem={};   // entered goal diff / goals-for; games left?
+  const epts={}, egd={}, egf={}, hasRem={};   // entered points / goal diff / goals-for; games left?
   for(const g of GL){ const ts=D.groups[g];
-    for(let s=0;s<4;s++){ egd[ts[s]]=0; egf[ts[s]]=0; hasRem[ts[s]]=false; }
+    for(let s=0;s<4;s++){ epts[ts[s]]=0; egd[ts[s]]=0; egf[ts[s]]=0; hasRem[ts[s]]=false; }
     for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
       const sc=scores[g][mi], a=+sc.a, b=+sc.b;
-      if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ egd[ts[i]]+=a-b; egf[ts[i]]+=a; egd[ts[j]]+=b-a; egf[ts[j]]+=b; }
+      if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ egd[ts[i]]+=a-b; egf[ts[i]]+=a; egd[ts[j]]+=b-a; egf[ts[j]]+=b;
+        if(a>b)epts[ts[i]]+=3; else if(b>a)epts[ts[j]]+=3; else {epts[ts[i]]++; epts[ts[j]]++;} }
       else { hasRem[ts[i]]=true; hasRem[ts[j]]=true; } } }
-  // x STRICTLY beats y on the real, modelled tiebreakers (goal diff, then goals
-  // for) — no strength, so equal-on-both is a genuine tie, not a winner.
+  // x STRICTLY beats y on the goal-difference tiebreakers (gd, then goals for) — no
+  // strength, so equal-on-both is a genuine tie. Used while games remain.
   const tb=(x,y)=> egd[x]>egd[y] || (egd[x]===egd[y] && egf[x]>egf[y]);
+  // Once a group is COMPLETE the order is decided, so rank it with the full modelled
+  // tie-break (head-to-head included); genuinely-tied teams share a rank. This drives
+  // the clinch bounds below, replacing the goal-diff-only `tb` for finished groups.
+  const fifaRank={};
+  for(const g of GL){ const ts=D.groups[g]; if(ts.some(t=>hasRem[t])) continue;
+    const stat={}; ts.forEach(t=> stat[t]={pts:epts[t], gd:egd[t], gf:egf[t]});
+    let r=0; fifaTiers(g, stat).forEach(tier=>{ tier.forEach(tm=> fifaRank[tm]=r); r+=tier.length; }); }
   const mustT2={}, mustT3={}, cantT2={}, cantT3={}, pMax={}, pMin={}, minThird={}, maxThird={};
   for(const g of GL){ const ts=D.groups[g], cur=[0,0,0,0], rem=[];
+    const hh=[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];   // hh[i][j] = i vs j result (1/0/-1), null if unplayed
+    for(let i=0;i<4;i++) for(let j=0;j<4;j++) hh[i][j]=null;
     for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
       const sc=scores[g][mi], a=+sc.a, b=+sc.b;
-      if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ if(a>b)cur[i]+=3; else if(b>a)cur[j]+=3; else {cur[i]++;cur[j]++;} }
+      if(sc.a!==''&&sc.b!==''&&a===a&&b===b){ if(a>b)cur[i]+=3; else if(b>a)cur[j]+=3; else {cur[i]++;cur[j]++;}
+        const r=a>b?1:(a<b?-1:0); hh[i][j]=r; hh[j][i]=-r; }
       else rem.push([i,j]); }
-    const total=Math.pow(3,rem.length);
+    const total=Math.pow(3,rem.length), complete=rem.length===0;
     const wMax=[0,0,0,0], bMin=[9,9,9,9], pMx=[0,0,0,0], pMn=[99,99,99,99]; let mnT=99, mxT=0;
     for(let m=0;m<total;m++){ const pts=cur.slice(); let x=m;
       for(let k=0;k<rem.length;k++){ const o=x%3; x=(x-o)/3; const i=rem[k][0], j=rem[k][1];
         if(o===0)pts[i]+=3; else if(o===1)pts[j]+=3; else {pts[i]++;pts[j]++;} }
       const thr=pts.slice().sort((p,q)=>q-p)[2]; if(thr<mnT)mnT=thr; if(thr>mxT)mxT=thr;
       for(let t=0;t<4;t++){ let sA=0, wT=0, bT=0;       // strictly-above, worst/best tied-above
-        for(let u=0;u<4;u++) if(u!==t){ if(pts[u]>pts[t])sA++;
-          else if(pts[u]===pts[t]){ const Y=ts[u];      // level on points: tiebreak (no strength)
-            if(hasRem[ts[t]]||hasRem[Y]||!tb(ts[t],Y)) wT++;   // Y above unless we strictly beat it
-            if(!hasRem[ts[t]]&&!hasRem[Y]&&tb(Y,ts[t])) bT++; } } // Y above only if it strictly beats us
+        if(complete){                                   // finished group: full FIFA rank decides (incl. head-to-head)
+          for(let u=0;u<4;u++) if(u!==t){ const Y=ts[u];
+            if(fifaRank[Y]<fifaRank[ts[t]]) sA++;        // strictly above
+            else if(fifaRank[Y]===fifaRank[ts[t]]) wT++; }  // tied: above only in the worst case
+        } else { let nTied=0; for(let v=0;v<4;v++) if(pts[v]===pts[t]) nTied++;   // size of this points-tie
+          for(let u=0;u<4;u++) if(u!==t){ if(pts[u]>pts[t])sA++;
+            else if(pts[u]===pts[t]){ const Y=ts[u];
+              const hr = nTied===2 ? hh[t][u] : null;    // a TWO-way tie whose head-to-head is already played
+              if(hr!==null && hr!==0){ if(hr<0){ wT++; bT++; } }   // decisive: u above iff u won that match
+              else {                                     // draw / 3-way+ / unplayed -> goal-diff tiebreak (no strength)
+                if(hasRem[ts[t]]||hasRem[Y]||!tb(ts[t],Y)) wT++;   // Y above unless we strictly beat it
+                if(!hasRem[ts[t]]&&!hasRem[Y]&&tb(Y,ts[t])) bT++; } } } } // Y above only if it strictly beats us
         if(1+sA+wT>wMax[t])wMax[t]=1+sA+wT; if(1+sA+bT<bMin[t])bMin[t]=1+sA+bT;
         if(pts[t]>pMx[t])pMx[t]=pts[t]; if(pts[t]<pMn[t])pMn[t]=pts[t]; } }
     minThird[g]=mnT; maxThird[g]=mxT;
@@ -573,10 +638,9 @@ function guarantees(){
   const lockedThird={};
   for(const g of GL){ const ts=D.groups[g];
     if(ts.some(t=>hasRem[t])) continue;
-    const ord=ts.slice().sort((x,y)=> pMax[y]-pMax[x] || egd[y]-egd[x] || egf[y]-egf[x]);
-    const same=(a,b)=> pMax[a]===pMax[b] && egd[a]===egd[b] && egf[a]===egf[b];
-    if(!same(ord[2],ord[1]) && !same(ord[2],ord[3]))
-      lockedThird[g]={team:ord[2], pts:pMax[ord[2]], gd:egd[ord[2]], gf:egf[ord[2]]};
+    const atThird=ts.filter(tm=> fifaRank[tm]===2);   // exactly two teams strictly above -> a unique 3rd
+    if(atThird.length===1){ const tm=atThird[0];
+      lockedThird[g]={team:tm, pts:epts[tm], gd:egd[tm], gf:egf[tm]}; }
   }
   const qbeat=(A,B)=> A.pts>B.pts || (A.pts===B.pts && (A.gd>B.gd || (A.gd===B.gd && A.gf>B.gf)));
   const qgeq=(A,B)=> !qbeat(B,A);
@@ -707,6 +771,17 @@ function forecast(N, Sx, MD){
   const frozen=RES.frozen, frozenField=frozen?resolveR32():null;
   const fixed={}; for(const g of GL) fixed[g]=scores[g].map(s=>{ const a=+s.a, b=+s.b;
     return (s.a!==''&&s.b!==''&&a===a&&b===b)? a-b : null; });
+  // A completed group has a decided FIFA order (head-to-head and all), so rank its
+  // teams by tier; the sim honours that and leaves only genuine ties to the draw.
+  const fifaTier=GL.map(g=>{ if(!scores[g].every(s=>s.a!==''&&s.b!=='')) return null;
+    const tsg=D.groups[g], sg=tsg.map(t=>({team:t,pts:0,gf:0,ga:0,gd:0}));
+    scores[g].forEach((sc,mi)=>{ const a=+sc.a,b=+sc.b,P=PAIRS[mi],i=P[0],j=P[1];
+      sg[i].gf+=a;sg[i].ga+=b;sg[j].gf+=b;sg[j].ga+=a;
+      if(a>b)sg[i].pts+=3;else if(b>a)sg[j].pts+=3;else{sg[i].pts++;sg[j].pts++;} });
+    sg.forEach(s=>s.gd=s.gf-s.ga); const stat={}; sg.forEach(s=>stat[s.team]=s);
+    const rank=[0,0,0,0]; let r=0;
+    fifaTiers(g,stat).forEach(tier=>{ tier.forEach(tm=> rank[tsg.indexOf(tm)]=r); r+=tier.length; });
+    return rank; });
   const R32C=D.r32.map(m=>m.map(c=>[c[0],c.slice(1)])), M=GL.length;
   const pts=[0,0,0,0], gd=[0,0,0,0], ord=[0,0,0,0], rk=[0,0,0,0];
   const tp=new Float64Array(M), td=new Float64Array(M), ts=new Float64Array(M), ti=new Array(M);
@@ -720,7 +795,9 @@ function forecast(N, Sx, MD){
         if(d>0)pts[i]+=3; else if(d<0)pts[j]+=3; else{pts[i]++;pts[j]++;} }
       rk[0]=rng();rk[1]=rng();rk[2]=rng();rk[3]=rng();
       ord[0]=0;ord[1]=1;ord[2]=2;ord[3]=3;
-      ord.sort((x,y)=>pts[y]-pts[x]||gd[y]-gd[x]||rk[y]-rk[x]);
+      const ft=fifaTier[gi];                            // decided group: FIFA tiers, lots only for genuine ties
+      if(ft) ord.sort((x,y)=> ft[x]-ft[y] || rk[x]-rk[y]);
+      else ord.sort((x,y)=>pts[y]-pts[x]||gd[y]-gd[x]||rk[y]-rk[x]);
       Wm[g]=teams[ord[0]]; Rm[g]=teams[ord[1]]; Tm[g]=teams[ord[2]];
       tp[gi]=pts[ord[2]]; td[gi]=gd[ord[2]]; ts[gi]=rng(); ti[gi]=gi; }
     ti.sort((x,y)=>tp[y]-tp[x]||td[y]-td[x]||ts[y]-ts[x]);
@@ -745,7 +822,7 @@ function forecast(N, Sx, MD){
 let tblSort={col:5, dir:-1};
 function renderTable(F){
   const COLS=['R32','R16','QF','SF','Final','Champ'];
-  const fmt=(t,c)=>{ if(c<=RES.sure[t]) return '100%'; if(c>=RES.elim[t]) return '0%';
+  const fmt=(t,c)=>{ if(c<=RES.sure[t]) return CK; if(c>=RES.elim[t]) return CX;
     const r=Math.round((F[t]?F[t][c]:0)*100); return r>=100?'>99%':r<=0?'<1%':r+'%'; };
   // sort key mirrors the displayed tiers, with out-of-band sentinels so certain
   // 100% sits above >99% and certain 0% sits below <1% (a simulated 0 that isn't
@@ -776,7 +853,7 @@ function renderTable(F){
 }
 function recompute(){ GUAR=guarantees(); resolveResults();   // all under the active view's strengths (S)
   const f=forecast(SIMN); FORE=f.table; LIVE=f.group;        // one MC feeds both cards and table
-  document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.textContent=fmtPct(sp.dataset.team); });
+  document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.innerHTML=fmtPct(sp.dataset.team); });
   renderTable(FORE); renderViewToggle(); renderTrajectory(); }
 // The toggle shows only once you've edited a strength (otherwise the views are
 // identical). Switching flips the active strengths and re-renders everything.
@@ -948,8 +1025,9 @@ const TEAMCOL={
   'Qatar':'#8d1b3d','Panama':'#0a3d91','Jordan':'#7a1730','Iraq':'#2aa15a','Uzbekistan':'#1ba0d6',
   'Cape Verde':'#234b91','Curacao':'#0049a8','Haiti':'#21458f','New Zealand':'#444444','South Africa':'#007a4d',
   'DR Congo':'#1ca0e3','Czech Republic':'#d7141a','Bosnia and Herzegovina':'#3457a0',
-  // future-proofing (not in the current field, harmless until they qualify):
-  'Italy':'#2a52a0','Nigeria':'#0a8a3f','Denmark':'#c8102e','Poland':'#d4213d','Serbia':'#b02230','Wales':'#b81b22'
+  // not in the current field -- historical / future-proofing (harmless until they qualify):
+  'Italy':'#2a52a0','Nigeria':'#0a8a3f','Denmark':'#c8102e','Poland':'#d4213d','Serbia':'#b02230','Wales':'#b81b22',
+  'Hungary':'#b3243a','Russia':'#d62828'
 };
 function renderTrajectory(){
   const el=document.getElementById('trajectory'); if(!el) return;
