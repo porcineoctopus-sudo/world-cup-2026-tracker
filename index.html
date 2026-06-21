@@ -1078,33 +1078,32 @@ function renderTrajectory(){
   tr.stages.forEach((lab,i)=> svg+=`<text class="tj-xlbl" x="${X(i).toFixed(1)}" y="${H-mB+14}">${lab}</text>`);
   // Every line is SOLID, in its team colour, through each round the team reached (one point per round it
   // entered). An alive team's line runs to the frontier; an eliminated team's simply stops at the deepest
-  // round it reached -- there is no crash to zero, because the entering-odds never collapse. Its flag is
-  // greyscaled there (the "out" cue). No flat segments, no special cases: each column is one distribution.
-  const elimFlag=[];
-  teams.forEach(t=>{ const s=tr.series[t], col=colour[t]||'#bbb', p=[]; let last=-1;
-    for(let i=0;i<ns;i++){ if(s[i]!=null){ p.push(X(i).toFixed(1)+','+Y(s[i]).toFixed(1)); last=i; } }
-    if(!p.length) return;
-    svg+=`<polyline class="tj-line" points="${p.join(' ')}" style="stroke:${col};stroke-width:1.7"/>`;
-    if(!tr.aliveLast[t]) elimFlag.push({t, fx:X(last), fy:Y(s[last]), ri:last}); });   // greyscale flag at the round reached
-  // Alive contenders keep a flag in the right-margin column at their entering-frontier champ (so the column
-  // mirrors the table's order) with a faint connector to their line's end. The horizontal de-overlap
-  // fan is scaled so even a big cluster near 1% stays within the chart width.
-  const ex=X(ns-1), laneY=[], flagH=13, alive=[]; let maxLane=0;
-  ranked.forEach(t=>{ const li=lastIdx(t); if(li<0||!tr.aliveLast[t]) return;   // assign lanes first
-    const fy=Y(cur[t]); let lane=0; while(laneY[lane]!==undefined && fy-laneY[lane]<flagH) lane++; laneY[lane]=fy;
-    if(lane>maxLane) maxLane=lane; alive.push({t,li,fy,lane}); });
-  const fstep = maxLane>0 ? Math.min(17,(W-22-ex-6)/maxLane) : 17;   // shrink fan to keep the last flag on-chart
-  alive.forEach(o=>{ o.fx=ex+6+o.lane*fstep; const col=colour[o.t]||'#bbb', dx=X(o.li), dy=Y(tr.series[o.t][o.li]);
-    svg+=`<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="2.3" fill="${col}"/>`+   // dots + connectors first
-      `<line class="tj-conn" x1="${dx.toFixed(1)}" y1="${dy.toFixed(1)}" x2="${o.fx.toFixed(1)}" y2="${o.fy.toFixed(1)}"/>`; });
-  // Eliminated flags sit at the round each team reached, greyscaled (the "out" cue), de-overlapped within a round.
-  const byR={}; elimFlag.forEach(o=> (byR[o.ri]||(byR[o.ri]=[])).push(o));
-  Object.keys(byR).forEach(r=>{ const g=byR[r]; g.sort((a,b)=>a.fy-b.fy);
-    for(let i=1;i<g.length;i++) if(g[i].fy-g[i-1].fy<flagH) g[i].fy=g[i-1].fy+flagH;   // separate same-round flags
-    const over=g[g.length-1].fy-(mT+PY-2); if(over>0) g.forEach(o=> o.fy-=over);        // keep the stack within the plot
-    g.forEach(o=>{ svg+=`<text x="${o.fx.toFixed(1)}" y="${(o.fy+4).toFixed(1)}" text-anchor="middle" style="font-size:11px;filter:grayscale(1)">${FLAG[o.t]}</text>`; }); });
-  // alive flags drawn last, so connector lines never cover a flag
-  alive.forEach(o=>{ svg+=`<text x="${o.fx.toFixed(1)}" y="${(o.fy+3).toFixed(1)}" style="font-size:12px">${FLAG[o.t]}</text>`; });
+  // round it reached -- the entering-odds never collapse to zero. No flat segments, no special cases.
+  teams.forEach(t=>{ const s=tr.series[t], col=colour[t]||'#bbb', p=[];
+    for(let i=0;i<ns;i++){ if(s[i]!=null) p.push(X(i).toFixed(1)+','+Y(s[i]).toFixed(1)); }
+    if(p.length) svg+=`<polyline class="tj-line" points="${p.join(' ')}" style="stroke:${col};stroke-width:1.7"/>`; });
+  // Flags: every drawn team gets a flag just to the RIGHT of where its line ENDS (its last dot), at the dot's
+  // own height, joined by a thin connector. Alive teams end at the frontier (a right-margin column); eliminated
+  // teams end at the deepest round they reached, and their flag is greyscaled (the "out" cue). flagFan() is
+  // shared by both: within a column it keeps each flag at its dot's y and fans only vertical neighbours out into
+  // horizontal lanes, as far as the room to the next column (or the right margin) allows -- so a crowded round
+  // stays legible and no flag ever drifts off its height.
+  const flagH=13;
+  const flagFan=(g,baseX,room)=>{ g.sort((a,b)=>a.dy-b.dy); const laneY=[]; let maxLane=0;   // top-to-bottom
+    g.forEach(o=>{ let lane=0; while(laneY[lane]!==undefined && o.dy-laneY[lane]<flagH) lane++;
+      laneY[lane]=o.dy; o.lane=lane; if(lane>maxLane) maxLane=lane; });                       // first lane that clears
+    const fstep = maxLane>0 ? Math.min(17, room/maxLane) : 17;                                // shrink to fit the room
+    g.forEach(o=> o.fx=baseX+o.lane*fstep); };
+  const drawn=[], byCol={};
+  ranked.forEach(t=>{ const li=lastIdx(t); if(li<0) return;          // ranked desc -> highest champ takes lane 0
+    const o={t, li, dx:X(li), dy:Y(tr.series[t][li]), col:colour[t]||'#bbb', grey:!tr.aliveLast[t]};
+    drawn.push(o); (byCol[li]||(byCol[li]=[])).push(o); });
+  Object.keys(byCol).forEach(k=>{ const li=+k, baseX=X(li)+6,        // one fan per column where lines end
+    room = li<ns-1 ? Math.max(8, X(li+1)-baseX-16) : W-22-baseX;     // stay within the gap to the next column / the margin
+    flagFan(byCol[k], baseX, room); });
+  drawn.forEach(o=> svg+=`<circle cx="${o.dx.toFixed(1)}" cy="${o.dy.toFixed(1)}" r="2.3" fill="${o.col}"/>`+   // dots + connectors first
+    `<line class="tj-conn" x1="${o.dx.toFixed(1)}" y1="${o.dy.toFixed(1)}" x2="${o.fx.toFixed(1)}" y2="${o.dy.toFixed(1)}"/>`);
+  drawn.forEach(o=> svg+=`<text x="${o.fx.toFixed(1)}" y="${(o.dy+4).toFixed(1)}" style="font-size:12px${o.grey?';filter:grayscale(1)':''}">${FLAG[o.t]}</text>`);   // flags on top, so a connector never covers one
   const cap = below>0 ? `<div class="tj-foot">+ ${below} more team${below>1?'s':''} still in contention, currently below 1%</div>` : '';
   el.innerHTML=svg+`</svg>`+cap;
 }
