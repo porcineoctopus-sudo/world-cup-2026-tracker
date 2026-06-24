@@ -172,7 +172,7 @@
 <h2 class="sec">Knockout bracket</h2>
 <div class="bracket"><div class="rounds" id="bracket"></div></div>
 <h2 class="sec">Team strength &amp; full forecast</h2>
-<p class="sf-note">Drag a team's slider to set <em>your</em> view of its strength — the model's value is marked on the track (↺ resets it). The whole forecast updates to match. Sliders are capped to keep things realistic.</p>
+<p class="sf-note">Drag a team's slider to set <em>your</em> view of its strength — the model's value is marked on the track (↺ resets it). The whole forecast updates to match; it may take a moment to propagate the change through the tournament. Sliders are capped to keep things realistic.</p>
 <div id="scorecard" class="scorecard"></div>
 <div id="viewtoggle" class="viewtoggle"></div>
 <div class="sf-wrap">
@@ -449,6 +449,19 @@ function buildMDCache(){ if(MDCACHE) return;
     MDCACHE[g]=PAIRS.map((_,mi)=>{ const dist=matchDistOf(g,mi), n=dist.length, gd=new Array(n), cum=new Float64Array(n);
       let c=0; for(let k=0;k<n;k++){ gd[k]=dist[k][0]; c+=dist[k][1]; cum[k]=c; } cum[n-1]=1; return {gd,cum}; });
 }
+// Scoreline = margin (the trusted strength-independent curve above) + a "base": the
+// loser's goals in a decisive game, or the shared score in a draw. The base reuses the
+// SAME one knob as the margin model (marginDecay), as a geometric from 0: P(base=b) ∝
+// r^b, b=0..kmax (renormalised). So 1-0 > 2-1 > 3-2 etc., and silly totals are doubly
+// suppressed (need a big margin AND a big base). This adds goals-for to the sim WITHOUT
+// touching the margin marginal — W/D/L and goal-difference behaviour stay byte-identical;
+// only the group tie-breakers (Article 13 1c/2e: goals scored) gain the data they need.
+let BASECUM=null;
+function buildBaseCum(){ if(BASECUM) return BASECUM;
+  const r=D.marginDecay, k=D.kmax, w=[]; let z=0;
+  for(let b=0;b<=k;b++){ const x=Math.pow(r,b); w.push(x); z+=x; }
+  const cum=new Float64Array(k+1); let c=0;
+  for(let b=0;b<=k;b++){ c+=w[b]/z; cum[b]=c; } cum[k]=1; return (BASECUM=cum); }
 
 function renderGroups(){
   const adv = new Set(), third = new Set(), q=effThirdGroups();
@@ -580,7 +593,12 @@ function renderPicker(){
 // restores cursor focus; recompute() re-runs the simulation debounced and updates
 // ONLY the percentage cells — never the score inputs — so it never steals focus
 // (so you can tab through a scoreline like 2 [tab] 0 uninterrupted).
-const SIMN=2000;
+const SIMN=20000;   // Monte-Carlo sample count. Sets the noise floor on every displayed %:
+// a result you enter reshuffles the shared RNG stream, so before/after carry ~sqrt(p(1-p)/N)
+// of independent noise -- at 2000 an UNRELATED result jolted unrelated teams ~1.3pt; 20000
+// holds that phantom movement near ~0.4pt, so small honest changes (group progression, the
+// champion trajectory) read as signal. One knob for the headline and the trajectory's
+// per-round columns alike (the latter cached per prefix, so most stay warm between edits).
 let LIVE={}, GUAR={}, FORE={}, FINALS={}, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
 // `view` ("mine"/"model", declared up top) flips ALL strength-derived output
 // together -- group win-%, projected standings, bracket and the table -- so they
@@ -777,6 +795,33 @@ function resolveResults(){
 // qualification odds for the cards (always, ignoring any freeze), and the simulated
 // 32-team field. The knockout then runs from that field — or, when the user has
 // frozen the bracket with a knockout pick, from the fixed current field instead.
+// FIFA Article 13 (2026) ranking for ONE simulated group, the stochastic twin of
+// fifaTiers/fifaOrder: overall points, then for teams level on points the head-to-head
+// mini-league (pts, gd, gf among them, re-applied to any still-level subset), then
+// overall gd and gf. mga[mi]/mgb[mi] are this iteration's goals for PAIRS[mi][0]/[1].
+// Genuine ties (level on every modelled criterion) fall to lots (rk), as fifaTiers
+// leaves them open — we don't model fair play / FIFA ranking. Writes order into `out`.
+function simOrder(out, pts, gd, gf, mga, mgb, rk){
+  const h2h=set=>{ const P=[0,0,0,0], G=[0,0,0,0], F=[0,0,0,0];
+    for(let mi=0;mi<6;mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
+      if(set.indexOf(i)>=0 && set.indexOf(j)>=0){ const a=mga[mi], b=mgb[mi];
+        G[i]+=a-b; G[j]+=b-a; F[i]+=a; F[j]+=b;
+        if(a>b)P[i]+=3; else if(b>a)P[j]+=3; else {P[i]++;P[j]++;} } }
+    return [P,G,F]; };
+  const runs=(arr,eq)=>{ const o=[]; let cur=[arr[0]];
+    for(let k=1;k<arr.length;k++){ if(eq(arr[k-1],arr[k]))cur.push(arr[k]); else {o.push(cur);cur=[arr[k]];} }
+    o.push(cur); return o; };
+  const resolve=cl=>{ if(cl.length<=1) return [cl];
+    const hp=h2h(cl), P=hp[0], G=hp[1], F=hp[2];                 // step 1: among the teams concerned
+    const s=cl.slice().sort((x,y)=> P[y]-P[x]||G[y]-G[x]||F[y]-F[x]);
+    const subs=runs(s,(x,y)=> P[x]===P[y]&&G[x]===G[y]&&F[x]===F[y]);
+    if(subs.length>1){ const o=[]; subs.forEach(sub=> resolve(sub).forEach(t=>o.push(t))); return o; }  // re-apply to subsets
+    const s2=cl.slice().sort((x,y)=> gd[y]-gd[x]||gf[y]-gf[x]);  // step 2: overall gd, then overall gf
+    return runs(s2,(x,y)=> gd[x]===gd[y]&&gf[x]===gf[y]); };
+  let n=0;
+  runs([0,1,2,3].sort((x,y)=> pts[y]-pts[x]), (x,y)=> pts[x]===pts[y])
+    .forEach(c=> resolve(c).forEach(tier=> tier.slice().sort((x,y)=> rk[x]-rk[y]).forEach(i=> out[n++]=i)));
+}
 // forecast(N) runs on the effective strengths (S) by default. Sx/MD let a caller
 // run it on a different strength source + match-curve cache (e.g. the model's S0
 // for the model-vs-mine comparison) without disturbing the live state.
@@ -798,8 +843,10 @@ function forecast(N, Sx, MD){
       for(let j=0;j<pairs.length;j++){ const w=ko(tag+j, prev[pairs[j][0]], prev[pairs[j][1]]); out[j]=w; if(w) cnt[w][col]++; }
       prev=out; } };
   const frozen=RES.frozen, frozenField=frozen?resolveR32():null;
-  const fixed={}; for(const g of GL) fixed[g]=scores[g].map(s=>{ const a=+s.a, b=+s.b;
-    return (s.a!==''&&s.b!==''&&a===a&&b===b)? a-b : null; });
+  const FA={}, FB={};                                   // entered scoreline: goals of PAIRS[mi][0]/[1], else null
+  for(const g of GL){ FA[g]=new Array(6); FB[g]=new Array(6);
+    for(let mi=0;mi<6;mi++){ const s=scores[g][mi], a=+s.a, b=+s.b;
+      const ok = s.a!==''&&s.b!==''&&a===a&&b===b; FA[g][mi]= ok? a : null; FB[g][mi]= ok? b : null; } }
   // A completed group has a decided FIFA order (head-to-head and all), so rank its
   // teams by tier; the sim honours that and leaves only genuine ties to the draw.
   const fifaTier=GL.map(g=>{ if(!scores[g].every(s=>s.a!==''&&s.b!=='')) return null;
@@ -812,24 +859,29 @@ function forecast(N, Sx, MD){
     fifaTiers(g,stat).forEach(tier=>{ tier.forEach(tm=> rank[tsg.indexOf(tm)]=r); r+=tier.length; });
     return rank; });
   const R32C=D.r32.map(m=>m.map(c=>[c[0],c.slice(1)])), M=GL.length;
-  const pts=[0,0,0,0], gd=[0,0,0,0], ord=[0,0,0,0], rk=[0,0,0,0];
-  const tp=new Float64Array(M), td=new Float64Array(M), ts=new Float64Array(M), ti=new Array(M);
+  const BC=buildBaseCum(), BK=BC.length-1;              // base-goals cumulative (loser/level score)
+  const pts=[0,0,0,0], gd=[0,0,0,0], gf=[0,0,0,0], ord=[0,0,0,0], rk=[0,0,0,0];
+  const mga=new Int16Array(6), mgb=new Int16Array(6);   // this group's sampled scorelines, for head-to-head
+  const tp=new Float64Array(M), td=new Float64Array(M), tg=new Float64Array(M), ts=new Float64Array(M), ti=new Array(M);
   const Wm={}, Rm={}, Tm={}, simField=new Array(16);
   for(let it=0; it<N; it++){
-    for(let gi=0; gi<M; gi++){ const g=GL[gi], teams=D.groups[g], md=MD[g], fx=fixed[g];
-      pts[0]=pts[1]=pts[2]=pts[3]=0; gd[0]=gd[1]=gd[2]=gd[3]=0;
-      for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1];
-        const c=md[mi].cum, n=c.length, u=rng(); let k=0; while(k<n-1&&u>=c[k])k++;
-        const d=fx[mi]===null?md[mi].gd[k]:fx[mi]; gd[i]+=d; gd[j]-=d;
-        if(d>0)pts[i]+=3; else if(d<0)pts[j]+=3; else{pts[i]++;pts[j]++;} }
+    for(let gi=0; gi<M; gi++){ const g=GL[gi], teams=D.groups[g], md=MD[g], fa=FA[g], fb=FB[g];
+      pts[0]=pts[1]=pts[2]=pts[3]=0; gd[0]=gd[1]=gd[2]=gd[3]=0; gf[0]=gf[1]=gf[2]=gf[3]=0;
+      for(let mi=0; mi<6; mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1]; let a,b;
+        if(fa[mi]!==null){ a=fa[mi]; b=fb[mi]; }         // entered result -> real scoreline
+        else { const c=md[mi].cum, n=c.length, u=rng(); let k=0; while(k<n-1&&u>=c[k])k++;
+          const d=md[mi].gd[k];                          // sampled margin (trusted model), then a base score
+          let lo=0; const ub=rng(); while(lo<BK&&ub>=BC[lo])lo++;
+          if(d>0){ a=lo+d; b=lo; } else if(d<0){ a=lo; b=lo-d; } else { a=lo; b=lo; } }
+        mga[mi]=a; mgb[mi]=b; gf[i]+=a; gf[j]+=b; gd[i]+=a-b; gd[j]+=b-a;
+        if(a>b)pts[i]+=3; else if(b>a)pts[j]+=3; else{pts[i]++;pts[j]++;} }
       rk[0]=rng();rk[1]=rng();rk[2]=rng();rk[3]=rng();
-      ord[0]=0;ord[1]=1;ord[2]=2;ord[3]=3;
-      const ft=fifaTier[gi];                            // decided group: FIFA tiers, lots only for genuine ties
-      if(ft) ord.sort((x,y)=> ft[x]-ft[y] || rk[x]-rk[y]);
-      else ord.sort((x,y)=>pts[y]-pts[x]||gd[y]-gd[x]||rk[y]-rk[x]);
+      const ft=fifaTier[gi];                            // decided in the ENTERED scores: precomputed tiers
+      if(ft){ ord[0]=0;ord[1]=1;ord[2]=2;ord[3]=3; ord.sort((x,y)=> ft[x]-ft[y] || rk[x]-rk[y]); }
+      else simOrder(ord, pts, gd, gf, mga, mgb, rk);    // Article-13 ladder on this sim's scorelines (h2h, gf)
       Wm[g]=teams[ord[0]]; Rm[g]=teams[ord[1]]; Tm[g]=teams[ord[2]];
-      tp[gi]=pts[ord[2]]; td[gi]=gd[ord[2]]; ts[gi]=rng(); ti[gi]=gi; }
-    ti.sort((x,y)=>tp[y]-tp[x]||td[y]-td[x]||ts[y]-ts[x]);
+      tp[gi]=pts[ord[2]]; td[gi]=gd[ord[2]]; tg[gi]=gf[ord[2]]; ts[gi]=rng(); ti[gi]=gi; }
+    ti.sort((x,y)=>tp[y]-tp[x]||td[y]-td[x]||tg[y]-tg[x]||ts[y]-ts[x]);
     const qual=[]; for(let k=0;k<8;k++) qual.push(GL[ti[k]]);
     const assign=D.thirdAssign[qual.slice().sort().join('')]||{};
     for(let i=0;i<16;i++){ const ca=R32C[i][0], cb=R32C[i][1];
