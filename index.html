@@ -84,6 +84,7 @@
   .tm .nm { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tm .seat { flex:none; font-size:8px; color:var(--mut); border:1px solid var(--soft);
               border-radius:3px; padding:0 2px; line-height:1.4; white-space:nowrap; }
+  .tm .pp { flex:none; color:var(--soft); font-size:8px; }   /* placement confidence: speculative-slot marker */
   .tm .pc { color:var(--mut); font-size:9.5px; }
   .tm.win { font-weight:700; } .tm.win .pc { color:var(--advln); }
   .tm.locked { background:var(--lock); } .tm.locked.win .pc { color:#2b50b8; }
@@ -414,13 +415,30 @@ function round(teams,pairs,tag){
 // 3<groups> = a third-placed team from one of those candidate groups (e.g. 3ABCDF).
 function seatLabel(code){ const k=code[0], g=code.slice(1);
   return k==='W'?'1'+g : k==='R'?'2'+g : '3'+D.thirdSlots[g]; }
+// Placement confidence for a bracket slot: {p, conf}. p = P(this team fills this slot)
+// from the Monte-Carlo occupancy (null before the first run); conf = the slot is locked.
+// R32 seats lock on the group rank (1st seed iff that team has clinched 1st, 2nd iff 2nd);
+// a knockout slot locks once a pick forces it (every sim agrees, p===1).
+function seatPlace(mi,s,team){ const code=D.r32[mi][s], k=code[0];
+  const p = (SEATP[mi] && SEATP[mi][s]) ? (SEATP[mi][s][team]||0) : null;
+  const pinned = (RES.seatPin && RES.seatPin[mi]) ? RES.seatPin[mi][s] : null;   // complete scores OR picker override
+  const conf = (pinned!=null && pinned===team)                                   // settles 3rd-place slots and broken ties too
+            || (k==='W'&&PLACE[team]===1) || (k==='R'&&PLACE[team]===2);         // early 1st/2nd clinch (before all games played)
+  return {p, conf}; }
+function koPlace(col,slot,team){ const arr=KOP[col]; const p = arr ? (arr[slot][team]||0) : null;
+  return {p, conf: p!=null && p>=1}; }                  // p===1 only when a pick fully forces the slot
 function bracket(){
   const r32=resolveR32().map((p,mi)=>({a:p[0],b:p[1],id:'r32_'+mi,winner:winner(p[0],p[1],'r32_'+mi),
-    seats:[seatLabel(D.r32[mi][0]),seatLabel(D.r32[mi][1])]}));
+    seats:[seatLabel(D.r32[mi][0]),seatLabel(D.r32[mi][1])],
+    place:[seatPlace(mi,0,p[0]),seatPlace(mi,1,p[1])]}));
   const r16=round(r32.map(m=>m.winner),D.r16,'r16_');
   const qf =round(r16.map(m=>m.winner),D.qf,'qf_');
   const sf =round(qf.map(m=>m.winner),D.sf,'sf_');
   const fin=round(sf.map(m=>m.winner),[[0,1]],'final_');
+  r16.forEach((m,mi)=>{ m.place=[koPlace(1,D.r16[mi][0],m.a),koPlace(1,D.r16[mi][1],m.b)]; });
+  qf .forEach((m,mi)=>{ m.place=[koPlace(2,D.qf [mi][0],m.a),koPlace(2,D.qf [mi][1],m.b)]; });
+  sf .forEach((m,mi)=>{ m.place=[koPlace(3,D.sf [mi][0],m.a),koPlace(3,D.sf [mi][1],m.b)]; });
+  fin.forEach((m)   =>{ m.place=[koPlace(4,0,m.a),koPlace(4,1,m.b)]; });
   return {r32,r16,qf,sf,fin};
 }
 
@@ -500,7 +518,13 @@ function tie(m, kind){
     const p = Math.round(prob(pos==='top'?m.a:m.b, pos==='top'?m.b:m.a)*100);
     const cls=(t===m.winner?'win ':'')+(locks[m.id]?'locked ':'');
     const seat = m.seats ? `<span class="seat">${m.seats[idx]}</span>` : '';
-    return `<div class="tm ${cls}" data-id="${m.id}" data-t="${esc(t)}">${seat}${flag(t)}`+
+    // Placement confidence: grey % when this team's spot here is still speculative; nothing
+    // once it's locked (clean card = confirmed). Distinct from the right-hand match-win %.
+    let pp='';
+    if(m.place){ const pl=m.place[idx];
+      if(pl.p!=null && !pl.conf){ const r=Math.round(pl.p*100);
+        pp=`<span class="pp" title="chance this team fills this slot">${r>=100?'>99':r<=0?'<1':r}%</span>`; } }
+    return `<div class="tm ${cls}" data-id="${m.id}" data-t="${esc(t)}">${seat}${pp}${flag(t)}`+
       `<span class="nm">${esc(t)}</span><span class="pc">${p}%</span></div>`;
   }).join('');
 }
@@ -557,7 +581,8 @@ function renderPicker(){
     const opt=slot=>D.groups[g].map(t=>`<option value="${esc(t)}" ${t===o[slot]?'selected':''}>${esc(t)}</option>`).join('');
     const row=(slot,lab)=>`<label class="pk-s">${lab}<select data-g="${g}" data-slot="${slot}">${opt(slot)}</select></label>`;
     return `<div class="pk-g"><div class="pk-h">Group ${g}`+
-      (manual?` <span class="pk-m">manual</span><button class="pk-auto" data-auto-g="${g}">auto</button>`:``)+
+      (manual?` <span class="pk-m">manual</span><button class="pk-auto" data-auto-g="${g}">auto</button>`
+             :` <button class="pk-auto" data-lock-g="${g}" title="confirm this order as final">lock</button>`)+
       `</div>${row(0,'1st')}${row(1,'2nd')}${row(2,'3rd')}</div>`;
   }).join('');
   const boxes=GL.map(g=>{
@@ -580,6 +605,8 @@ function renderPicker(){
   }));
   document.querySelectorAll('#picker [data-auto-g]').forEach(b=>b.addEventListener('click',()=>{
     delete over.ord[b.dataset.autoG]; save(); render(); }));
+  document.querySelectorAll('#picker [data-lock-g]').forEach(b=>b.addEventListener('click',()=>{   // pin the current projected order as-is
+    over.ord[b.dataset.lockG]=projOrder(b.dataset.lockG).slice(); save(); render(); }));
   const ath=document.querySelector('#picker [data-auto-th]');
   if(ath) ath.addEventListener('click',()=>{ delete over.thirds; save(); render(); });
   document.querySelectorAll('#picker [data-third]').forEach(c=>c.addEventListener('change',e=>{
@@ -599,7 +626,10 @@ const SIMN=20000;   // Monte-Carlo sample count. Sets the noise floor on every d
 // holds that phantom movement near ~0.4pt, so small honest changes (group progression, the
 // champion trajectory) read as signal. One knob for the headline and the trajectory's
 // per-round columns alike (the latter cached per prefix, so most stay warm between edits).
-let LIVE={}, GUAR={}, FORE={}, FINALS={}, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
+let LIVE={}, GUAR={}, PLACE={}, FORE={}, FINALS={}, SEATP=[], KOP={}, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
+// PLACE[team] = locked group rank (1/2/3/4) from guarantees(); SEATP/KOP = Monte-Carlo
+// occupancy of each bracket slot (SEATP: 16 R32 seats, group-driven / freeze-independent;
+// KOP[col]: who occupies each R16..Final slot, driven by the played/picked field).
 // `view` ("mine"/"model", declared up top) flips ALL strength-derived output
 // together -- group win-%, projected standings, bracket and the table -- so they
 // stay consistent. The strength panel and the scorecard's "you" side always
@@ -643,7 +673,7 @@ function guarantees(){
   for(const g of GL){ const ts=D.groups[g]; if(ts.some(t=>hasRem[t])) continue;
     const stat={}; ts.forEach(t=> stat[t]={pts:epts[t], gd:egd[t], gf:egf[t]});
     let r=0; fifaTiers(g, stat).forEach(tier=>{ tier.forEach(tm=> fifaRank[tm]=r); r+=tier.length; }); }
-  const mustT2={}, mustT3={}, cantT2={}, cantT3={}, pMax={}, pMin={}, minThird={}, maxThird={};
+  const mustT2={}, mustT3={}, cantT2={}, cantT3={}, pMax={}, pMin={}, minThird={}, maxThird={}, place={};
   for(const g of GL){ const ts=D.groups[g], cur=[0,0,0,0], rem=[];
     const hh=[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];   // hh[i][j] = i vs j result (1/0/-1), null if unplayed
     for(let i=0;i<4;i++) for(let j=0;j<4;j++) hh[i][j]=null;
@@ -676,7 +706,8 @@ function guarantees(){
     minThird[g]=mnT; maxThird[g]=mxT;
     for(let t=0;t<4;t++){ const tm=ts[t];
       mustT2[tm]=wMax[t]<=2; mustT3[tm]=wMax[t]<=3; cantT2[tm]=bMin[t]>=3; cantT3[tm]=bMin[t]>=4;
-      pMax[tm]=pMx[t]; pMin[tm]=pMn[t]; } }
+      pMax[tm]=pMx[t]; pMin[tm]=pMn[t];
+      place[tm]=(wMax[t]===bMin[t])?wMax[t]:0; } }   // exact finishing rank locked iff best case === worst case
   // A fully decided group with a UNIQUE third place has its third's exact quality
   // (points, goal diff, goals for) locked, which lets us settle goal-difference
   // ties between third-placed teams that points alone cannot separate.
@@ -705,6 +736,11 @@ function guarantees(){
       if(c<=7) st='in'; }
     status[tm]=st;
   }
+  // Side-effect: publish the EXACT-rank locks to the PLACE global. `place[tm]` is the
+  // finishing rank (1/2/3/4) the remaining games can't change; the bracket uses 1st/2nd
+  // to confirm an R32 seat (a team can clinch progression — status 'in' — without yet
+  // clinching whether it's the 1- or 2-seed). guarantees() still RETURNS the status map.
+  PLACE=place;
   return status;
 }
 // ===== Full-tournament forecast (the bottom table) ============================
@@ -787,7 +823,12 @@ function resolveResults(){
     if(tag==='r32_'){ const a=fld[idx][0], b=fld[idx][1], L=(a===W)?b:(b===W?a:null); if(L) sE(L, r.col); }
     else { const wa=forced[r.feed+r.pairs[idx][0]], wb=forced[r.feed+r.pairs[idx][1]];
       const opp=(wa===W)?wb:(wb===W?wa:null); if(opp) sE(opp, r.col); } }   // forced loser eliminated for sure
-  RES={resolved: forced, sure, elim, frozen, warn};
+  // seatPin[mi] = [team|null, team|null]: the team locked into each R32 seat by COMPLETE
+  // scores or a manual picker override (over.ord / over.thirds), via r32t. The bracket
+  // uses it to mark a seat confirmed — including positions the model can't settle on its
+  // own (a fair-play / drawn-lots tie the user resolved in the picker).
+  const seatPin=D.r32.map(([ca,cb])=>[r32t(ca), r32t(cb)]);
+  RES={resolved: forced, sure, elim, frozen, warn, seatPin};
 }
 // One Monte-Carlo serves BOTH the group-stage cards and the full forecast table,
 // so the "reach R32" number is identical in both places (no twin estimates). Each
@@ -831,16 +872,24 @@ function forecast(N, Sx, MD){
   const res=RES.resolved, ROUNDS=[[D.r16,'r16_',2],[D.qf,'qf_',3],[D.sf,'sf_',4],[[[0,1]],'final_',5]];
   const rng=mulberry32(0x9E3779B1), cnt={}, greach={}, finalsCnt={};
   D.teams.forEach(t=>{ cnt[t.name]=[0,0,0,0,0,0]; greach[t.name]=0; });
+  const bump=(o,t)=>{ o[t]=(o[t]||0)+1; };               // occupancy tally helper
+  // seatCnt[seat][side] / koCnt[col][slot]: which team fills each bracket slot, per sim.
+  // seatCnt comes from the group-driven field (so it ignores any knockout freeze); koCnt
+  // comes from the played/picked field, so a knockout pick pins the downstream slots.
+  const seatCnt=new Array(16); for(let i=0;i<16;i++) seatCnt[i]=[{},{}];
+  const koCnt={1:new Array(16),2:new Array(8),3:new Array(4),4:new Array(2)};
+  for(const c in koCnt) for(let i=0;i<koCnt[c].length;i++) koCnt[c][i]={};
   const pr=(a,b)=>1/(1+Math.exp(-(Sx[a]-Sx[b])/D.scale));
   const ko=(id,a,b)=>{ const f=res[id]; if(f===a||f===b) return f; if(!a)return b; if(!b)return a;
     return rng()<pr(a,b)?a:b; };
   const playKO=field=>{ const r32w=new Array(16);
-    for(let i=0;i<16;i++){ const w=ko('r32_'+i, field[i][0], field[i][1]); r32w[i]=w; if(w) cnt[w][1]++; }
+    for(let i=0;i<16;i++){ const w=ko('r32_'+i, field[i][0], field[i][1]); r32w[i]=w; if(w){ cnt[w][1]++; bump(koCnt[1][i],w); } }
     let prev=r32w;
     for(const [pairs,tag,col] of ROUNDS){ const out=new Array(pairs.length);
       if(tag==='final_'){ const fa=prev[0], fb=prev[1];   // the two SF winners ARE the finalists; KEEP bracket order
         if(fa&&fb){ const k=fa+'|'+fb; finalsCnt[k]=(finalsCnt[k]||0)+1; } }   // top half (sf0) | bottom half (sf1)
-      for(let j=0;j<pairs.length;j++){ const w=ko(tag+j, prev[pairs[j][0]], prev[pairs[j][1]]); out[j]=w; if(w) cnt[w][col]++; }
+      for(let j=0;j<pairs.length;j++){ const w=ko(tag+j, prev[pairs[j][0]], prev[pairs[j][1]]); out[j]=w;
+        if(w){ cnt[w][col]++; if(col<=4) bump(koCnt[col][j],w); } }   // col 5 = champion (no slot to mark)
       prev=out; } };
   const frozen=RES.frozen, frozenField=frozen?resolveR32():null;
   const FA={}, FB={};                                   // entered scoreline: goals of PAIRS[mi][0]/[1], else null
@@ -887,7 +936,8 @@ function forecast(N, Sx, MD){
     for(let i=0;i<16;i++){ const ca=R32C[i][0], cb=R32C[i][1];
       const a = ca[0]==='W'?Wm[ca[1]] : ca[0]==='R'?Rm[ca[1]] : Tm[assign[ca[1]]];
       const b = cb[0]==='W'?Wm[cb[1]] : cb[0]==='R'?Rm[cb[1]] : Tm[assign[cb[1]]];
-      simField[i]=[a,b]; if(a) greach[a]++; if(b) greach[b]++; }    // live group odds (cards)
+      simField[i]=[a,b];
+      if(a){ greach[a]++; bump(seatCnt[i][0],a); } if(b){ greach[b]++; bump(seatCnt[i][1],b); } }   // live group odds (cards) + R32-seat occupancy
     const field = frozen ? frozenField : simField;
     if(!frozen) for(let i=0;i<16;i++){ const p=simField[i]; if(p[0]) cnt[p[0]][0]++; if(p[1]) cnt[p[1]][0]++; }
     playKO(field);
@@ -897,7 +947,10 @@ function forecast(N, Sx, MD){
   for(const t in cnt) table[t]=cnt[t].map(c=>c/N);
   for(const t in greach) group[t]=greach[t]/N;
   for(const k in finalsCnt) finals[k]=finalsCnt[k]/N;   // ordered "top|bottom" -> P(that exact final, that way round)
-  return {table, group, finals};
+  const norm=o=>{ const r={}; for(const k in o) r[k]=o[k]/N; return r; };
+  const seats=seatCnt.map(([a,b])=>[norm(a),norm(b)]);  // per R32 seat: {team -> P(this team fills it)}
+  const koP={}; for(const c in koCnt) koP[c]=koCnt[c].map(norm);   // per R16..Final slot: {team -> P(this team fills it)}
+  return {table, group, finals, seats, ko:koP};
 }
 // Sort state for the forecast table: col -1 = Team (alphabetical), 0..5 = a stage
 // column; dir +1 ascending / -1 descending. Default: champion odds, highest first.
@@ -933,9 +986,10 @@ function renderTable(F){
     renderTable(F); }));
   if(typeof syncStrHead==='function') syncStrHead();     // keep the strength panel header aligned
 }
-function recompute(){ GUAR=guarantees(); resolveResults();   // all under the active view's strengths (S)
-  const f=forecast(SIMN); FORE=f.table; LIVE=f.group; FINALS=f.finals;   // one MC feeds cards, table, trajectory and finals
+function recompute(){ GUAR=guarantees(); resolveResults();   // all under the active view's strengths (S); guarantees() also sets PLACE
+  const f=forecast(SIMN); FORE=f.table; LIVE=f.group; FINALS=f.finals; SEATP=f.seats; KOP=f.ko;   // one MC feeds cards, table, trajectory, finals and bracket-slot odds
   document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.innerHTML=fmtPct(sp.dataset.team); });
+  renderBracket();   // refresh the placement markers from the new occupancy odds
   renderTable(FORE); renderViewToggle(); renderTrajectory(); renderFinals(); }
 // The toggle shows only once you've edited a strength (otherwise the views are
 // identical). Switching flips the active strengths and re-renders everything.
@@ -1078,10 +1132,10 @@ function stageChamp(st){
   const ms=maskScores(st.mm), ml=maskLocks(st.rd);
   const key=st.label+'|'+JSON.stringify([ms,ml,over,strOver,view]);
   if(_stageCache[key]) return _stageCache[key];
-  const sS=scores,sL=locks,sG=GUAR,sR=RES;             // run the forecast on this round's prefix, then restore
-  scores=ms; locks=ml; GUAR=guarantees(); resolveResults();
+  const sS=scores,sL=locks,sG=GUAR,sR=RES,sP=PLACE;    // run the forecast on this round's prefix, then restore
+  scores=ms; locks=ml; GUAR=guarantees(); resolveResults();   // guarantees() also overwrites PLACE; restored below
   const t=forecast(SIMN).table;                        // full reach table [reach_R32..champion] per team
-  scores=sS; locks=sL; GUAR=sG; RES=sR;
+  scores=sS; locks=sL; GUAR=sG; RES=sR; PLACE=sP;
   return _stageCache[key]=t;
 }
 function champTrajectory(){
@@ -1203,7 +1257,8 @@ function renderTrajectory(){
 function render(){
   const a=document.activeElement, d=a&&a.dataset;
   const key=(d&&d.g!==undefined&&d.s!==undefined)?[d.g,d.m,d.s,a.selectionStart]:null;
-  GUAR=guarantees(); renderGroups(); renderPicker(); renderBracket(); renderScorecard();
+  GUAR=guarantees(); resolveResults();   // refresh RES (incl. seatPin) so a picker/score edit updates the bracket markers now
+  renderGroups(); renderPicker(); renderBracket(); renderScorecard();
   if(key){ const el=document.querySelector(`input[data-g="${key[0]}"][data-m="${key[1]}"][data-s="${key[2]}"]`);
            if(el){ el.focus(); try{ el.setSelectionRange(key[3],key[3]); }catch(e){} } }
 }
