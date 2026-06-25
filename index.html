@@ -180,7 +180,7 @@
   <div id="forecast" class="tablewrap"></div>
 </div>
 <h2 class="sec">Champion-chance trajectory</h2>
-<p class="sf-note">Each team's title odds <em>heading into</em> each round. Teams at <strong>1%</strong> or more get a line; others still in contention are tallied below. An eliminated team's line stops at the round it reached, its flag greyed out.</p>
+<p class="sf-note">Each team's title odds <em>heading into</em> each round. A team gets a line once its chance reaches <strong>1%</strong> and keeps it from then on, so you can watch a contender rise <em>and</em> fall. An eliminated team's line stops at the round it reached, its flag greyed out. Teams that have never reached 1% are tallied below.</p>
 <div id="trajectory" class="trajectory"></div>
 <h2 class="sec">Most likely finals</h2>
 <p class="sf-note">Match-ups at <strong>1%</strong> or more get a card. The big number is how often that <em>exact</em> final occurs; each side's figure is its chance of winning that game. These are specific pairings, so a team can be a 1%+ title pick without any single 1%+ final.</p>
@@ -1131,19 +1131,16 @@ const TEAMCOL={
   'Italy':'#2a52a0','Nigeria':'#0a8a3f','Denmark':'#c8102e','Poland':'#d4213d','Serbia':'#b02230','Wales':'#b81b22',
   'Hungary':'#b3243a','Russia':'#d62828'
 };
-// A team gets a line iff it is CURRENTLY a >=1% contender (cur, matching the forecast table's champion
-// column) OR, once ELIMINATED, its LAST plotted dot was still >=1% (a genuine crash). Two things matter:
-//  * alive teams key on cur, NOT their last dot -- mid-round a team that hasn't played yet has a stale last
-//    dot, so keying on it would draw teams the table lists below 1% and double-count the "+N below" tally;
-//  * eliminated teams key on the last dot, NOT the all-time peak -- otherwise a contender that had already
-//    faded below 1% while alive (and so had no line) would get one back the instant it went out (a "zombie").
+// A team gets a line iff it is CURRENTLY a >=1% contender (cur) OR was >=1% at the completion of
+// ANY round (some plotted dot >=1%). Once a team crosses 1% it is drawn for good -- membership only
+// ever GROWS, so a line can never disappear and then come back ("zombie"). The whole rise-and-fall
+// is shown: a team that fades below 1% keeps a (coloured) line trailing through the <1% zone; once
+// eliminated it greys and stops. A team that was never a >=1% contender is never drawn (tallied in
+// the "+N below" caption while it is still alive). cur covers the just-eliminated finalist still at
+// a high number; the series scan covers a faded ex-contender whose cur has dropped below 1%.
 function trajDrawn(tr, TPLOT){
-  return Object.keys(tr.series).filter(t=>{
-    if(tr.cur[t]>=TPLOT) return true;              // currently rounds to >=1% (alive contender or a just-out finalist)
-    if(tr.aliveLast[t]) return false;              // still alive but <1% -> tallied beneath the chart, no line
-    const s=tr.series[t];                          // eliminated: keep it iff its last plotted dot was still >=1%
-    for(let i=s.length-1;i>=0;i--) if(s[i]!=null) return s[i]>=TPLOT;
-    return false; }); }
+  return Object.keys(tr.series).filter(t=>
+    tr.cur[t]>=TPLOT || tr.series[t].some(v=> v!=null && v>=TPLOT)); }
 function renderTrajectory(){
   const el=document.getElementById('trajectory'); if(!el) return;
   const tr=champTrajectory(), ns=tr.stages.length;
@@ -1166,11 +1163,11 @@ function renderTrajectory(){
   for(let v=0; v<=ymax+1e-9; v+=step){ const yy=Y(v).toFixed(1);
     svg+=`<line class="tj-grid" x1="${mL}" y1="${yy}" x2="${W-mR}" y2="${yy}"/>`+
       `<text class="tj-lbl" x="${mL-4}" y="${(+yy+3).toFixed(1)}" text-anchor="end">${Math.round(v*100)}%</text>`; }
-  // Count of teams still IN CONTENTION but too low to plot (currently round to <1%): alive (can still
-  // reach the next round) and not drawn. Eliminated teams aren't counted. Rendered as a caption below
-  // the chart. (No 1%-reference line: since we plot teams that ROUND to 1%, some sit just under 1.0%,
-  // which a line at 1% would contradict.)
-  const below=Object.keys(tr.aliveLast).filter(t=> tr.aliveLast[t] && cur[t]<TPLOT).length;
+  // Count of teams still IN CONTENTION but never plotted: alive (can still reach the next round) and not
+  // drawn -- i.e. never a >=1% contender (an alive team that WAS >=1% keeps a faded line now, so it is
+  // drawn, not tallied). Eliminated teams aren't counted. Rendered as a caption below the chart.
+  const drawnSet=new Set(teams);
+  const below=Object.keys(tr.aliveLast).filter(t=> tr.aliveLast[t] && !drawnSet.has(t)).length;
   tr.stages.forEach((lab,i)=> svg+=`<text class="tj-xlbl" x="${X(i).toFixed(1)}" y="${H-mB+14}">${lab}</text>`);
   // Every line is SOLID, in its team colour, through each round the team reached (one point per round it
   // entered). An alive team's line runs to the frontier; an eliminated team's simply stops at the deepest
@@ -1200,7 +1197,7 @@ function renderTrajectory(){
   drawn.forEach(o=> svg+=`<circle cx="${o.dx.toFixed(1)}" cy="${o.dy.toFixed(1)}" r="2.3" fill="${o.col}"/>`+   // dots + connectors first
     `<line class="tj-conn" x1="${o.dx.toFixed(1)}" y1="${o.dy.toFixed(1)}" x2="${o.fx.toFixed(1)}" y2="${o.dy.toFixed(1)}"/>`);
   drawn.forEach(o=> svg+=`<text x="${o.fx.toFixed(1)}" y="${(o.dy+4).toFixed(1)}"${o.grey?' filter="url(#tjGray)"':''} style="font-size:12px">${FLAG[o.t]}</text>`);   // flags on top, so a connector never covers one
-  const cap = below>0 ? `<div class="tj-foot">+ ${below} more team${below>1?'s':''} still in contention, currently below 1%</div>` : '';
+  const cap = below>0 ? `<div class="tj-foot">+ ${below} more team${below>1?'s':''} still in contention, yet to reach 1%</div>` : '';
   el.innerHTML=svg+`</svg>`+cap;
 }
 function render(){
