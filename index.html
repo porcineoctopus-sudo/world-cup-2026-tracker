@@ -68,6 +68,16 @@
   .pk-boxes { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:1px 8px; margin-top:5px; }
   .pk-c { font-size:10.5px; display:flex; align-items:center; gap:3px; padding:1px 0; cursor:pointer; }
   .pk-c.on { font-weight:600; }
+  /* Knockout-slot distribution: who could fill each R32 seed (1A / 2A / 3ABCDF...). */
+  .sd-h { font-weight:400; font-size:9.5px; color:var(--mut); }
+  .sd-grp { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+            color:var(--mut); margin:8px 10px 1px; }
+  .sd-row { display:flex; align-items:center; flex-wrap:wrap; gap:3px 11px; margin:2px 10px; font-size:10.5px; }
+  .sd-row .seat { flex:none; }
+  .sd-dt { display:inline-flex; align-items:baseline; gap:3px; white-space:nowrap; }
+  .sd-dt .n { color:var(--mut); }
+  .sd-more { color:var(--soft); font-size:9px; }
+  .sd-pad { padding-bottom:8px; }
 
   .bracket { overflow-x:auto; padding:4px 12px 24px; }
   .rounds { display:flex; gap:18px; align-items:flex-start; min-width:max-content; }
@@ -172,6 +182,8 @@
 <div id="picker"></div></details>
 <h2 class="sec">Knockout bracket</h2>
 <div class="bracket"><div class="rounds" id="bracket"></div></div>
+<details class="pk sd"><summary>Who could fill each knockout slot <span class="sd-h">— chance %, ≥1%</span></summary>
+<div id="seatdist"></div></details>
 <h2 class="sec">Team strength &amp; full forecast</h2>
 <p class="sf-note">Drag a team's slider to set <em>your</em> view of its strength — the model's value is marked on the track (↺ resets it). The whole forecast updates to match; it may take a moment to propagate the change through the tournament. Sliders are capped to keep things realistic.</p>
 <div id="scorecard" class="scorecard"></div>
@@ -551,6 +563,36 @@ function renderBracket(){
       locks[id] = (locks[id]===t) ? undefined : t; if(!locks[id]) delete locks[id];
       save(); render(); scheduleRecompute(); });   // a knockout pick can change the forecast table
   });
+}
+// Distribution panel below the bracket: for each R32 seed (1A / 2A / 3ABCDF...), the teams
+// that could fill it and how often, from the SAME Monte-Carlo seat occupancy the bracket
+// markers use (SEATP, group-driven so it ignores a knockout freeze; honours picker overrides).
+// Grouped winners / runners-up / thirds; teams >=1% shown, the sub-1% tail summarised as "+N".
+function renderSeatDist(){
+  const el=document.getElementById('seatdist'); if(!el) return;
+  if(!SEATP || !SEATP.length){ el.innerHTML=''; return; }
+  const fmtP=p=>{ const r=Math.round(p*100); return r>=100?'>99%':r<=0?'<1%':r+'%'; };  // app % convention
+  const rowOf=(i,s)=>{
+    const code=D.r32[i][s], dist=(SEATP[i]&&SEATP[i][s])||{};
+    const ents=Object.keys(dist).map(t=>[t,dist[t]]).sort((a,b)=>b[1]-a[1]);
+    // Normally show >=1%, summarising the sub-1% tail as "+N". But when one team is a
+    // near-lock (>99%), this comparative view would otherwise hide every rival behind it,
+    // so reveal the long-shots (<1% entries) to show who the outliers actually are.
+    const showAll = ents.length && Math.round(ents[0][1]*100)>=100;
+    const shown = showAll ? ents : ents.filter(e=>Math.round(e[1]*100)>=1);
+    const more = showAll ? 0 : ents.length-shown.length;
+    const chips=shown.map(([t,p])=>{ const pc = seatPlace(i,s,t).conf ? CK : `<span class="n">${fmtP(p)}</span>`;
+      return `<span class="sd-dt">${flag(t)}<span class="sd-nm">${esc(t)}</span>${pc}</span>`; }).join('');
+    return `<div class="sd-row"><span class="seat">${seatLabel(code)}</span>${chips}`+
+      (more>0?` <span class="sd-more">+${more}</span>`:``)+`</div>`; };
+  const rows=kind=>{ const out=[];
+    for(let i=0;i<D.r32.length;i++) for(let s=0;s<2;s++){ const c=D.r32[i][s];
+      if(c[0]===kind) out.push([seatLabel(c), i, s]); }
+    return out.sort((a,b)=> a[0]<b[0]?-1:a[0]>b[0]?1:0).map(r=>rowOf(r[1],r[2])).join(''); };
+  el.innerHTML =
+    `<div class="sd-grp">Group winners</div>${rows('W')}`+
+    `<div class="sd-grp">Runners-up</div>${rows('R')}`+
+    `<div class="sd-grp">Third-place slots</div>${rows('T')}<div class="sd-pad"></div>`;
 }
 // "Most likely finals": the match-ups the Monte-Carlo throws up, each rendered as the knockout
 // tree's own card (each finalist's win-% in that 1v1, from prob()), captioned with how often that
@@ -1007,7 +1049,7 @@ function renderTable(F){
 function recompute(){ GUAR=guarantees(); resolveResults();   // all under the active view's strengths (S); guarantees() also sets PLACE
   const f=forecast(SIMN); FORE=f.table; LIVE=f.group; FINALS=f.finals; SEATP=f.seats; KOP=f.ko;   // one MC feeds cards, table, trajectory, finals and bracket-slot odds
   document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.innerHTML=fmtPct(sp.dataset.team); });
-  renderBracket();   // refresh the placement markers from the new occupancy odds
+  renderBracket(); renderSeatDist();   // refresh the placement markers + slot-distribution panel from the new occupancy odds
   renderTable(FORE); renderViewToggle(); renderTrajectory(); renderFinals(); }
 // The toggle shows only once you've edited a strength (otherwise the views are
 // identical). Switching flips the active strengths and re-renders everything.
