@@ -598,22 +598,24 @@ function renderPicker(){
     `<span class="pk-cnt ${n===8?'ok':'bad'}">${n}/8</span>`+
     (over.thirds?` <button class="pk-auto" data-auto-th="1">auto</button>`:``)+
     `</div><div class="pk-boxes">${boxes}</div></div>`;
+  // Each picker edit changes over.ord / over.thirds, which the forecast now consumes, so
+  // schedule a recompute (like a score edit) to refresh the table, trajectory and finals.
   document.querySelectorAll('#picker select').forEach(s=>s.addEventListener('change',e=>{
     const g=e.target.dataset.g, p=+e.target.dataset.slot, X=e.target.value;
     const cur=projOrder(g).slice(), i=cur.indexOf(X); cur[i]=cur[p]; cur[p]=X;  // swap into place
-    over.ord[g]=cur; save(); render();
+    over.ord[g]=cur; save(); render(); scheduleRecompute();
   }));
   document.querySelectorAll('#picker [data-auto-g]').forEach(b=>b.addEventListener('click',()=>{
-    delete over.ord[b.dataset.autoG]; save(); render(); }));
+    delete over.ord[b.dataset.autoG]; save(); render(); scheduleRecompute(); }));
   document.querySelectorAll('#picker [data-lock-g]').forEach(b=>b.addEventListener('click',()=>{   // pin the current projected order as-is
-    over.ord[b.dataset.lockG]=projOrder(b.dataset.lockG).slice(); save(); render(); }));
+    over.ord[b.dataset.lockG]=projOrder(b.dataset.lockG).slice(); save(); render(); scheduleRecompute(); }));
   const ath=document.querySelector('#picker [data-auto-th]');
-  if(ath) ath.addEventListener('click',()=>{ delete over.thirds; save(); render(); });
+  if(ath) ath.addEventListener('click',()=>{ delete over.thirds; save(); render(); scheduleRecompute(); });
   document.querySelectorAll('#picker [data-third]').forEach(c=>c.addEventListener('change',e=>{
     const g=e.target.dataset.third;
     let cur = over.thirds ? over.thirds.slice() : projAutoThirds();   // start from the projected default
     if(e.target.checked){ if(!cur.includes(g)) cur.push(g); } else cur=cur.filter(x=>x!==g);
-    over.thirds=cur; save(); render();
+    over.thirds=cur; save(); render(); scheduleRecompute();
   }));
 }
 // LIVE holds the last Monte-Carlo result. render() (every keystroke) reads it and
@@ -736,6 +738,14 @@ function guarantees(){
       if(c<=7) st='in'; }
     status[tm]=st;
   }
+  // A manual picker order asserts its finishing positions outright (the app's last resort
+  // for fair-play / drawn-lots ties the model can't settle). Treat it as ground truth for
+  // the certainty marks, exactly as the bracket seats already do — the forecast forces the
+  // same order, so the % agree with the icons. Top two always qualify, 4th never does; the
+  // 3rd qualifies iff it's among the pinned best-8 (left to the live logic / sim otherwise).
+  for(const g of GL){ const o=over.ord[g]; if(!o) continue;
+    status[o[0]]='in'; status[o[1]]='in'; status[o[3]]='out';
+    if(over.thirds && over.thirds.length===8) status[o[2]] = over.thirds.indexOf(g)>=0 ? 'in' : 'out'; }
   // Side-effect: publish the EXACT-rank locks to the PLACE global. `place[tm]` is the
   // finishing rank (1/2/3/4) the remaining games can't change; the bracket uses 1st/2nd
   // to confirm an R32 seat (a team can clinch progression — status 'in' — without yet
@@ -908,6 +918,11 @@ function forecast(N, Sx, MD){
     fifaTiers(g,stat).forEach(tier=>{ tier.forEach(tm=> rank[tsg.indexOf(tm)]=r); r+=tier.length; });
     return rank; });
   const R32C=D.r32.map(m=>m.map(c=>[c[0],c.slice(1)])), M=GL.length;
+  // A manual picker order is the user's assertion of a group's final standings (the app's
+  // last resort for fair-play / drawn-lots ties): force it in every simulation so the odds
+  // agree with the bracket and the green checks. over.thirds, when set, pins the best-8.
+  const OVR=GL.map(g=> over.ord[g] ? over.ord[g].map(t=>D.groups[g].indexOf(t)) : null);
+  const qualOvr=(over.thirds && over.thirds.length===8) ? over.thirds.slice() : null;
   const BC=buildBaseCum(), BK=BC.length-1;              // base-goals cumulative (loser/level score)
   const pts=[0,0,0,0], gd=[0,0,0,0], gf=[0,0,0,0], ord=[0,0,0,0], rk=[0,0,0,0];
   const mga=new Int16Array(6), mgb=new Int16Array(6);   // this group's sampled scorelines, for head-to-head
@@ -928,10 +943,13 @@ function forecast(N, Sx, MD){
       const ft=fifaTier[gi];                            // decided in the ENTERED scores: precomputed tiers
       if(ft){ ord[0]=0;ord[1]=1;ord[2]=2;ord[3]=3; ord.sort((x,y)=> ft[x]-ft[y] || rk[x]-rk[y]); }
       else simOrder(ord, pts, gd, gf, mga, mgb, rk);    // Article-13 ladder on this sim's scorelines (h2h, gf)
+      if(OVR[gi]){ ord[0]=OVR[gi][0]; ord[1]=OVR[gi][1]; ord[2]=OVR[gi][2]; ord[3]=OVR[gi][3]; }   // manual order overrides the sim
       Wm[g]=teams[ord[0]]; Rm[g]=teams[ord[1]]; Tm[g]=teams[ord[2]];
       tp[gi]=pts[ord[2]]; td[gi]=gd[ord[2]]; tg[gi]=gf[ord[2]]; ts[gi]=rng(); ti[gi]=gi; }
-    ti.sort((x,y)=>tp[y]-tp[x]||td[y]-td[x]||tg[y]-tg[x]||ts[y]-ts[x]);
-    const qual=[]; for(let k=0;k<8;k++) qual.push(GL[ti[k]]);
+    let qual;
+    if(qualOvr){ qual=qualOvr; }                          // pinned best-8 thirds: skip the cross-group sort
+    else { ti.sort((x,y)=>tp[y]-tp[x]||td[y]-td[x]||tg[y]-tg[x]||ts[y]-ts[x]);
+      qual=[]; for(let k=0;k<8;k++) qual.push(GL[ti[k]]); }
     const assign=D.thirdAssign[qual.slice().sort().join('')]||{};
     for(let i=0;i<16;i++){ const ca=R32C[i][0], cb=R32C[i][1];
       const a = ca[0]==='W'?Wm[ca[1]] : ca[0]==='R'?Rm[ca[1]] : Tm[assign[ca[1]]];
