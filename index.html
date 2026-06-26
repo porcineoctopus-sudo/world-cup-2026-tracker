@@ -317,9 +317,10 @@ function matchDistOf(g,mi){ const ts=D.groups[g], a=ts[PAIRS[mi][0]], b=ts[PAIRS
 // the same tier are level on everything we model (fair play and drawing of lots are
 // out of scope, so a tier of >1 is a genuine tie, not a ranking). `stat` carries each
 // team's overall {pts, gd, gf}; head-to-head is read from the actual played scores.
-function fifaTiers(g, stat){
+function fifaTiers(g, stat, playedArg){
   const ts=D.groups[g], played=[];
-  scores[g].forEach((sc,mi)=>{ const a=parseInt(sc.a), b=parseInt(sc.b);
+  if(playedArg) played.push.apply(played, playedArg);            // rank a HYPOTHETICAL completion (head-to-head from playedArg)
+  else scores[g].forEach((sc,mi)=>{ const a=parseInt(sc.a), b=parseInt(sc.b);
     if(!isNaN(a)&&!isNaN(b)) played.push({a:ts[PAIRS[mi][0]], b:ts[PAIRS[mi][1]], ga:a, gb:b}); });
   const h2h=set=>{ const inSet=new Set(set), t={};                 // mini-table over matches among `set`
     set.forEach(tm=>t[tm]={pts:0,gd:0,gf:0});
@@ -689,6 +690,33 @@ function fmtPct(t){ const g=GUAR[t];
   if(g==='in') return CK; if(g==='out') return CX;
   const r=Math.round((LIVE[t]||0)*100);
   return r>=100 ? '>99%' : r<=0 ? '<1%' : r+'%'; }
+// Achievable third-place qualities for an OPEN group: enumerate every completion of its
+// remaining matches (full scorelines, goals 0..TR_CAP — far beyond any group third's real
+// goal difference) and read off the third-placed team via the official ladder (fifaTiers,
+// head-to-head included). Returns the distinct {pts,gd,gf} a third here could still reach, so
+// the best-third clinch can rule out a rival that ties the candidate on points but provably
+// cannot match its goal difference. Only for <=2 remaining matches (cheap, and qualification
+// guarantees only crystallise that late); deeper groups return null and the clinch keeps its
+// conservative points-only bound.
+const TR_CAP=6;
+function thirdReachOf(g){
+  const ts=D.groups[g], base=[], rem=[];
+  for(let mi=0; mi<6; mi++){ const sc=scores[g][mi], a=+sc.a, b=+sc.b;
+    if(sc.a!==''&&sc.b!==''&&a===a&&b===b) base[mi]=[a,b]; else { base[mi]=null; rem.push(mi); } }
+  if(rem.length===0 || rem.length>2) return null;            // complete -> lockedThird; deep -> conservative
+  const span=TR_CAP+1, per=span*span, total=Math.pow(per, rem.length), seen={}, out=[];
+  for(let m=0;m<total;m++){ let x=m; const full=base.slice();
+    for(let k=0;k<rem.length;k++){ const o=x%per; x=(x-o)/per; full[rem[k]]=[(o/span)|0, o%span]; }
+    const stat={}; ts.forEach(t=> stat[t]={pts:0,gd:0,gf:0}); const pl=[];
+    for(let mi=0;mi<6;mi++){ const i=PAIRS[mi][0], j=PAIRS[mi][1], a=full[mi][0], b=full[mi][1];
+      stat[ts[i]].gf+=a; stat[ts[j]].gf+=b; stat[ts[i]].gd+=a-b; stat[ts[j]].gd+=b-a;
+      if(a>b)stat[ts[i]].pts+=3; else if(b>a)stat[ts[j]].pts+=3; else {stat[ts[i]].pts++; stat[ts[j]].pts++;}
+      pl.push({a:ts[i], b:ts[j], ga:a, gb:b}); }
+    const flat=[]; fifaTiers(g, stat, pl).forEach(tier=> tier.forEach(t=> flat.push(t)));
+    const q=stat[flat[2]], key=q.pts+'|'+q.gd+'|'+q.gf;            // teams in one tier share pts/gd/gf, so the 3rd's quality is well-defined
+    if(!seen[key]){ seen[key]=1; out.push({pts:q.pts, gd:q.gd, gf:q.gf}); } }
+  return out;
+}
 // Sound clinch/elimination, so 100% / 0% mean a true guarantee. Per group we
 // enumerate the remaining games' win/draw/loss and bound each team's finishing
 // rank, resolving ties by ACTUAL goal difference / goals-for once both tied teams
@@ -696,8 +724,10 @@ function fmtPct(t){ const g=GUAR[t];
 // (drawing of lots is not something we model), so teams level on points, goal
 // difference AND goals-for stay 'open' — genuinely undecided (e.g. an all-draws
 // 3/3/3/3 group is four open teams, not two arbitrary 100%s). A cross-group
-// points-bounds check then settles clear best-third cases: a third already beaten
-// by >=8 better thirds is out; one at most 7 others can reach is in.
+// best-third check then settles clear cases: a third already beaten by >=8 better
+// thirds is out; one at most 7 others can reach is in. Against a locked candidate the
+// reach test uses the official ladder per rival completion (thirdReachOf), so a rival
+// that can only TIE on points but never match goal difference is not counted.
 function guarantees(){
   const epts={}, egd={}, egf={}, hasRem={};   // entered points / goal diff / goals-for; games left?
   for(const g of GL){ const ts=D.groups[g];
@@ -762,8 +792,18 @@ function guarantees(){
     if(atThird.length===1){ const tm=atThird[0];
       lockedThird[g]={team:tm, pts:epts[tm], gd:egd[tm], gf:egf[tm]}; }
   }
+  const thirdReach={};
+  for(const g of GL) thirdReach[g]=thirdReachOf(g);   // open groups w/ <=2 left: distinct {pts,gd,gf} their 3rd could still reach
   const qbeat=(A,B)=> A.pts>B.pts || (A.pts===B.pts && (A.gd>B.gd || (A.gd===B.gd && A.gf>B.gf)));
   const qgeq=(A,B)=> !qbeat(B,A);
+  // Can group h still field a third ranked AT OR ABOVE candidate tm's third? With tm's third
+  // quality locked (xq) we compare on the full criteria: a settled rival via its locked third,
+  // an open rival via every quality its third could still reach, else fall back to points only.
+  const canMatchThird=(h, tm, xq)=>{
+    if(!xq) return maxThird[h] >= pMin[tm];                       // candidate quality not locked -> points-only
+    if(lockedThird[h]) return qgeq(lockedThird[h], xq);
+    if(thirdReach[h]) return thirdReach[h].some(q=> qgeq(q, xq));
+    return maxThird[h] >= xq.pts; };                              // deep open rival -> points-only (conservative)
   const status={};
   for(const g of GL) for(const tm of D.groups[g]){
     let st = mustT2[tm]?'in' : cantT3[tm]?'out' : 'open';
@@ -774,9 +814,7 @@ function guarantees(){
         else if(xq && lockedThird[h] && minThird[h]===pMax[tm] && qbeat(lockedThird[h],xq)) c++; } // both locked, beats on gd/gf
       if(c>=8) st='out'; }
     if(st==='open' && mustT3[tm]){ let c=0;            // groups that could match or beat this third
-      for(const h of GL) if(h!==g){
-        if(maxThird[h]>pMin[tm]) c++;                                          // could have more points
-        else if(maxThird[h]===pMin[tm] && (!xq || !lockedThird[h] || qgeq(lockedThird[h],xq))) c++; } // tie on points + unknown/>= gd
+      for(const h of GL) if(h!==g){ if(canMatchThird(h, tm, xq)) c++; }
       if(c<=7) st='in'; }
     status[tm]=st;
   }
@@ -875,11 +913,32 @@ function resolveResults(){
     if(tag==='r32_'){ const a=fld[idx][0], b=fld[idx][1], L=(a===W)?b:(b===W?a:null); if(L) sE(L, r.col); }
     else { const wa=forced[r.feed+r.pairs[idx][0]], wb=forced[r.feed+r.pairs[idx][1]];
       const opp=(wa===W)?wb:(wb===W?wa:null); if(opp) sE(opp, r.col); } }   // forced loser eliminated for sure
+  // Third-seat clinch: a third seat's occupant can be certain before every group finishes.
+  // FIFA deals the R32 third seats to the eight best-third GROUPS by a fixed table (thirdAssign)
+  // keyed on WHICH groups qualify. Enumerate the best-8 combinations still possible — keep every
+  // group whose third has clinched (M), drop every group whose third is eliminated (F), fill the
+  // rest from the undecided groups (U) — and if a seat maps to the SAME group across all of them,
+  // and that group's third is a known team, the seat is locked. Mirrors the best-third
+  // qualification clinch, one level up; open groups stay in U, so we never claim a false seat.
+  const tLock={};
+  { const M=[], F=[], U=[];
+    for(const g of GL){ const t=G3[g];
+      if(t && GUAR[t]==='in') M.push(g); else if(t && GUAR[t]==='out') F.push(g); else U.push(g); }
+    const k=8-M.length;
+    if(M.length && k>=0 && k<=U.length){ const slotG={};   // only an always-present (M) group can fill a seat in every combo
+      const walk=(start,cur)=>{ if(cur.length===k){
+          const alloc=D.thirdAssign[M.concat(cur).slice().sort().join('')];
+          if(alloc) for(const x in alloc){ (slotG[x]||(slotG[x]=new Set())).add(alloc[x]); } return; }
+        for(let i=start;i<U.length;i++){ cur.push(U[i]); walk(i+1,cur); cur.pop(); } };
+      walk(0,[]);
+      for(const x in slotG){ if(slotG[x].size===1){ const g0=slotG[x].values().next().value;
+        if(G3[g0]) tLock[x]=G3[g0]; } } } }
   // seatPin[mi] = [team|null, team|null]: the team locked into each R32 seat by COMPLETE
-  // scores or a manual picker override (over.ord / over.thirds), via r32t. The bracket
-  // uses it to mark a seat confirmed — including positions the model can't settle on its
-  // own (a fair-play / drawn-lots tie the user resolved in the picker).
-  const seatPin=D.r32.map(([ca,cb])=>[r32t(ca), r32t(cb)]);
+  // scores or a manual picker override (over.ord / over.thirds, via r32t), or — for a third
+  // seat — by the clinch above. The bracket / slot panel use it to mark a seat confirmed,
+  // including positions the model can't settle on its own (a drawn-lots tie set in the picker).
+  const r32f=c=>{ const v=r32t(c); return v!=null ? v : (c[0]==='T' ? (tLock[c.slice(1)]||null) : null); };
+  const seatPin=D.r32.map(([ca,cb])=>[r32f(ca), r32f(cb)]);
   RES={resolved: forced, sure, elim, frozen, warn, seatPin};
 }
 // One Monte-Carlo serves BOTH the group-stage cards and the full forecast table,
