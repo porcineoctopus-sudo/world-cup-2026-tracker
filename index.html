@@ -407,11 +407,13 @@ function autoThirds(){ return GL.map(thirdOf)
 function projAutoThirds(){ return GL.map(projThirdOf)
   .sort((x,y)=> y.pts-x.pts||y.gd-x.gd||y.gf-x.gf||S[y.team]-S[x.team]).slice(0,8).map(t=>t.group); }
 // effThirdGroups = live best-8 thirds for the group-card highlight. projThird*
-// = projected, for the picker (what it shows / starts editing from) and the
-// bracket. An override only takes effect once exactly 8 groups are chosen.
+// = the set used for the picker (what it shows / starts editing from) and the
+// bracket. Prefer MTHIRDS — the single most-likely best-8 set from the Monte-Carlo
+// (so the bracket's tentative third holders match their placement %); fall back to the
+// projected-points estimate before the first run. An override always wins once 8 are chosen.
 function effThirdGroups(){ return (over.thirds && over.thirds.length===8) ? over.thirds.slice() : autoThirds(); }
-function projThirdSelection(){ return over.thirds ? over.thirds.slice() : projAutoThirds(); }
-function projThirdGroups(){ return (over.thirds && over.thirds.length===8) ? over.thirds.slice() : projAutoThirds(); }
+function projThirdSelection(){ return over.thirds ? over.thirds.slice() : (MTHIRDS ? MTHIRDS.slice() : projAutoThirds()); }
+function projThirdGroups(){ return (over.thirds && over.thirds.length===8) ? over.thirds.slice() : (MTHIRDS ? MTHIRDS.slice() : projAutoThirds()); }
 function resolveR32(){                                // seeded from PROJECTED final standings
   const q=projThirdGroups(), key=q.slice().sort().join('');
   const assign=D.thirdAssign[key]||{}, byGroup={}; q.forEach(g=>byGroup[g]=projOrder(g)[2]);
@@ -671,7 +673,7 @@ const SIMN=20000;   // Monte-Carlo sample count. Sets the noise floor on every d
 // holds that phantom movement near ~0.4pt, so small honest changes (group progression, the
 // champion trajectory) read as signal. One knob for the headline and the trajectory's
 // per-round columns alike (the latter cached per prefix, so most stay warm between edits).
-let LIVE={}, GUAR={}, PLACE={}, FORE={}, FINALS={}, SEATP=[], KOP={}, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
+let LIVE={}, GUAR={}, PLACE={}, FORE={}, FINALS={}, SEATP=[], KOP={}, MTHIRDS=null, RES={resolved:{},sure:{},elim:{},frozen:false,warn:false}, _rec=null;
 // PLACE[team] = locked group rank (1/2/3/4) from guarantees(); SEATP/KOP = Monte-Carlo
 // occupancy of each bracket slot (SEATP: 16 R32 seats, group-driven / freeze-independent;
 // KOP[col]: who occupies each R16..Final slot, driven by the played/picked field).
@@ -981,7 +983,7 @@ function forecast(N, Sx, MD){
   if(!Sx) Sx=S;
   if(!MD){ buildMDCache(); MD=MDCACHE; }
   const res=RES.resolved, ROUNDS=[[D.r16,'r16_',2],[D.qf,'qf_',3],[D.sf,'sf_',4],[[[0,1]],'final_',5]];
-  const rng=mulberry32(0x9E3779B1), cnt={}, greach={}, finalsCnt={};
+  const rng=mulberry32(0x9E3779B1), cnt={}, greach={}, finalsCnt={}, setCnt={};   // setCnt: frequency of each best-8 third GROUP-set
   D.teams.forEach(t=>{ cnt[t.name]=[0,0,0,0,0,0]; greach[t.name]=0; });
   const bump=(o,t)=>{ o[t]=(o[t]||0)+1; };               // occupancy tally helper
   // seatCnt[seat][side] / koCnt[col][slot]: which team fills each bracket slot, per sim.
@@ -1051,7 +1053,8 @@ function forecast(N, Sx, MD){
     if(qualOvr){ qual=qualOvr; }                          // pinned best-8 thirds: skip the cross-group sort
     else { ti.sort((x,y)=>tp[y]-tp[x]||td[y]-td[x]||tg[y]-tg[x]||ts[y]-ts[x]);
       qual=[]; for(let k=0;k<8;k++) qual.push(GL[ti[k]]); }
-    const assign=D.thirdAssign[qual.slice().sort().join('')]||{};
+    const qk=qual.slice().sort().join(''); setCnt[qk]=(setCnt[qk]||0)+1;   // tally this sim's qualifying set
+    const assign=D.thirdAssign[qk]||{};
     for(let i=0;i<16;i++){ const ca=R32C[i][0], cb=R32C[i][1];
       const a = ca[0]==='W'?Wm[ca[1]] : ca[0]==='R'?Rm[ca[1]] : Tm[assign[ca[1]]];
       const b = cb[0]==='W'?Wm[cb[1]] : cb[0]==='R'?Rm[cb[1]] : Tm[assign[cb[1]]];
@@ -1069,7 +1072,9 @@ function forecast(N, Sx, MD){
   const norm=o=>{ const r={}; for(const k in o) r[k]=o[k]/N; return r; };
   const seats=seatCnt.map(([a,b])=>[norm(a),norm(b)]);  // per R32 seat: {team -> P(this team fills it)}
   const koP={}; for(const c in koCnt) koP[c]=koCnt[c].map(norm);   // per R16..Final slot: {team -> P(this team fills it)}
-  return {table, group, finals, seats, ko:koP};
+  let mk=null, mb=-1; for(const k in setCnt){ if(setCnt[k]>mb){ mb=setCnt[k]; mk=k; } }   // most-frequent best-8 set
+  const thirds = mk ? mk.split('') : projAutoThirds();             // fallback bracket set: the single most-likely qualifying set
+  return {table, group, finals, seats, ko:koP, thirds, thirdSets:setCnt};
 }
 // Sort state for the forecast table: col -1 = Team (alphabetical), 0..5 = a stage
 // column; dir +1 ascending / -1 descending. Default: champion odds, highest first.
@@ -1105,8 +1110,26 @@ function renderTable(F){
     renderTable(F); }));
   if(typeof syncStrHead==='function') syncStrHead();     // keep the strength panel header aligned
 }
+// The bracket's tentative best-8 third set. FIFA deals the third seats to the qualifying
+// GROUPS by a fixed table that is highly sensitive to WHICH eight qualify, so a stale
+// point-estimate set can seat a third where it has ~1% occupancy. Among the sets the
+// Monte-Carlo actually produced, take the one whose assignment best matches the per-seat
+// occupancy (each tentative holder is then its seat's favourite), breaking ties toward the
+// more frequent (more likely) set. Keeps the bracket coherent — it's always a real assignment.
+function bestThirdSet(seats, setCnt){
+  let best=null, bestScore=-1;
+  for(const key in setCnt){ const assign=D.thirdAssign[key]; if(!assign) continue;
+    let score=0;
+    for(let i=0;i<D.r32.length;i++) for(let s=0;s<2;s++){ const c=D.r32[i][s]; if(c[0]!=='T') continue;
+      const g=assign[c.slice(1)]; if(!g) continue; const tm=projOrder(g)[2];
+      score += (seats[i] && seats[i][s] && seats[i][s][tm]) || 0; }
+    score += setCnt[key]*1e-9;                                     // tie-break: prefer the more frequent set
+    if(score>bestScore){ bestScore=score; best=key; } }
+  return best ? best.split('') : null;
+}
 function recompute(){ GUAR=guarantees(); resolveResults();   // all under the active view's strengths (S); guarantees() also sets PLACE
   const f=forecast(SIMN); FORE=f.table; LIVE=f.group; FINALS=f.finals; SEATP=f.seats; KOP=f.ko;   // one MC feeds cards, table, trajectory, finals and bracket-slot odds
+  MTHIRDS=bestThirdSet(SEATP, f.thirdSets) || f.thirds;   // bracket's tentative thirds: the achievable set that best matches the seat odds
   document.querySelectorAll('#groups .pa').forEach(sp=>{ sp.innerHTML=fmtPct(sp.dataset.team); });
   renderBracket(); renderSeatDist();   // refresh the placement markers + slot-distribution panel from the new occupancy odds
   renderTable(FORE); renderViewToggle(); renderTrajectory(); renderFinals(); }
