@@ -847,6 +847,53 @@ function guarantees(){
 // of your picks stays live), giving each team P(reach each stage). A single banner
 // warns when any pick rests on a projected (not entered) upstream; a player who
 // entered every upstream result in order sees no warning.
+// Third-seat clinch: a third seat's occupant can be certain before every group finishes.
+// FIFA deals the eight best-third R32 seats to the qualifying GROUPS by a fixed table
+// (thirdAssign) keyed on WHICH groups qualify. The best-8 is M (groups whose KNOWN third has
+// clinched a top-8 finish) plus the top (8-|M|) of U (undecided groups) by third points;
+// F (thirds already eliminated) never qualify. We enumerate only the best-8 combinations that
+// can ACTUALLY still happen — dropping a k-subset of U as the top-k only when some non-member's
+// MINIMUM points strictly exceed a member's MAXIMUM (then that member can never outrank it, on
+// any tiebreak). Points come from win/draw/loss alone, so thirdReachOf enumerates them exactly
+// (no goal-cap dependence), and points-tied pairs are left possible — so we never drop a
+// reachable combination. If a seat maps to the SAME group across every combination that
+// remains, and that group's third is a known team, the seat is locked. q3[g] = a complete
+// group's third {pts,gd,gf}; thirdReachOf bounds an open group's. Sound: we only ever rule out
+// the impossible, so a seat is pinned only when genuinely certain — never a false seat.
+function thirdSeatLocks(G3, q3){
+  const M=[], U=[];                                            // F (eliminated thirds) are simply left out
+  for(const g of GL){ const t=G3[g];
+    if(t && GUAR[t]==='in') M.push(g); else if(!(t && GUAR[t]==='out')) U.push(g); }
+  const k=8-M.length;
+  if(!M.length || k<0 || k>U.length) return {};
+  // Reachable POINTS span per undecided group's third. Points come from win/draw/loss alone,
+  // so thirdReachOf enumerates them exactly (no goal-cap dependence) — and we compare ONLY on
+  // points, never goal difference: a combo is dropped solely when a non-member's MINIMUM points
+  // strictly exceed a member's MAXIMUM (then that member can never outrank it, on any tiebreak).
+  // Points-tied pairs are left possible, so we never drop a reachable combo -> never a false seat.
+  const best={}, worst={};
+  for(const g of U){ if(q3[g]){ best[g]=q3[g].pts; worst[g]=q3[g].pts; continue; }
+    const reach=thirdReachOf(g);
+    if(!reach || !reach.length){ best[g]=99; worst[g]=-9; continue; }   // unboundable -> permissive
+    let bb=reach[0].pts, ww=reach[0].pts; for(const r of reach){ if(r.pts>bb)bb=r.pts; if(r.pts<ww)ww=r.pts; }
+    best[g]=bb; worst[g]=ww; }
+  const inS=new Array(U.length).fill(false), slotG={};
+  const consider=cur=>{                                        // cur = indices of U that qualify (size k)
+    inS.fill(false); cur.forEach(i=>inS[i]=true);
+    let minBest=99, maxWorst=-9;                               // weakest member's ceiling vs strongest non-member's floor
+    for(let i=0;i<U.length;i++){ if(inS[i]){ if(best[U[i]]<minBest)minBest=best[U[i]]; }
+      else if(worst[U[i]]>maxWorst) maxWorst=worst[U[i]]; }
+    if(minBest<maxWorst) return;                               // a non-member always outpoints a member -> can't happen
+    const alloc=D.thirdAssign[M.concat(cur.map(i=>U[i])).slice().sort().join('')];
+    if(alloc) for(const x in alloc){ (slotG[x]||(slotG[x]=new Set())).add(alloc[x]); } };
+  const walk=(start,cur)=>{ if(cur.length===k){ consider(cur); return; }
+    for(let i=start;i<U.length;i++){ cur.push(i); walk(i+1,cur); cur.pop(); } };
+  walk(0,[]);
+  const tLock={};
+  for(const x in slotG){ if(slotG[x].size===1){ const g0=slotG[x].values().next().value;
+    if(G3[g0]) tLock[x]=G3[g0]; } }
+  return tLock;
+}
 function resolveResults(){
   const frozen = Object.keys(locks).some(id=>locks[id]!=null);
   const tied=(a,b)=> !!a&&!!b && a.pts===b.pts && a.gd===b.gd && a.gf===b.gf;
@@ -915,26 +962,7 @@ function resolveResults(){
     if(tag==='r32_'){ const a=fld[idx][0], b=fld[idx][1], L=(a===W)?b:(b===W?a:null); if(L) sE(L, r.col); }
     else { const wa=forced[r.feed+r.pairs[idx][0]], wb=forced[r.feed+r.pairs[idx][1]];
       const opp=(wa===W)?wb:(wb===W?wa:null); if(opp) sE(opp, r.col); } }   // forced loser eliminated for sure
-  // Third-seat clinch: a third seat's occupant can be certain before every group finishes.
-  // FIFA deals the R32 third seats to the eight best-third GROUPS by a fixed table (thirdAssign)
-  // keyed on WHICH groups qualify. Enumerate the best-8 combinations still possible — keep every
-  // group whose third has clinched (M), drop every group whose third is eliminated (F), fill the
-  // rest from the undecided groups (U) — and if a seat maps to the SAME group across all of them,
-  // and that group's third is a known team, the seat is locked. Mirrors the best-third
-  // qualification clinch, one level up; open groups stay in U, so we never claim a false seat.
-  const tLock={};
-  { const M=[], F=[], U=[];
-    for(const g of GL){ const t=G3[g];
-      if(t && GUAR[t]==='in') M.push(g); else if(t && GUAR[t]==='out') F.push(g); else U.push(g); }
-    const k=8-M.length;
-    if(M.length && k>=0 && k<=U.length){ const slotG={};   // only an always-present (M) group can fill a seat in every combo
-      const walk=(start,cur)=>{ if(cur.length===k){
-          const alloc=D.thirdAssign[M.concat(cur).slice().sort().join('')];
-          if(alloc) for(const x in alloc){ (slotG[x]||(slotG[x]=new Set())).add(alloc[x]); } return; }
-        for(let i=start;i<U.length;i++){ cur.push(U[i]); walk(i+1,cur); cur.pop(); } };
-      walk(0,[]);
-      for(const x in slotG){ if(slotG[x].size===1){ const g0=slotG[x].values().next().value;
-        if(G3[g0]) tLock[x]=G3[g0]; } } } }
+  const tLock=thirdSeatLocks(G3, q3);   // third seats whose occupant is certain (see the function)
   // seatPin[mi] = [team|null, team|null]: the team locked into each R32 seat by COMPLETE
   // scores or a manual picker override (over.ord / over.thirds, via r32t), or — for a third
   // seat — by the clinch above. The bracket / slot panel use it to mark a seat confirmed,
