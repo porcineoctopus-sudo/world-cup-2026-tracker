@@ -186,7 +186,7 @@
 <h2 class="sec">Knockout bracket</h2>
 <div class="bracket"><div class="rounds" id="bracket"></div></div>
 <h2 class="sec">Champion-chance trajectory</h2>
-<p class="sf-note">Each team's title odds <em>heading into</em> each round. A team gets a line once its chance reaches <strong>1%</strong> and keeps it from then on, so you can watch a contender rise <em>and</em> fall. An eliminated team's line stops at the round it reached, its flag greyed out. Teams that have never reached 1% are tallied below.</p>
+<p class="sf-note">Each team's title odds <em>heading into</em> each round. A team gets a line once its chance reaches <strong>1%</strong>. An eliminated team's line stops at the round it reached, its flag greyed out. While a round is being played the final <strong>Now</strong> column is live: a team yet to play shows a hollow <span class="tj-leg">○</span> at its current odds, dashed back to where it last played.</p>
 <div id="trajectory" class="trajectory"></div>
 <h2 class="sec">Most likely finals</h2>
 <p class="sf-note">Match-ups at <strong>1%</strong> or more get a card. The big number is how often that <em>exact</em> final occurs; each side's figure is its chance of winning that game. These are specific pairings, so a team can be a 1%+ title pick without any single 1%+ final.</p>
@@ -1355,11 +1355,10 @@ function champTrajectory(){
   // knockout and points/goal-diff exits) AND guarantees() (catches group head-to-head exits the MC's
   // points->gd->random ordering misses). The frontier mask == the current state, so GUAR is live.
   for(const nm of names) aliveLast[nm]= now[nm][fac]>0 && GUAR[nm]!=='out';
-  // In the KNOCKOUTS, while the frontier round is still being played its feeding column is a live
-  // snapshot, not a settled "entering" one, so label it "Now"; it reverts to the round name once
-  // the round completes. (Group matchdays keep their labels: a single group game barely moves the
-  // title odds, so the live treatment would only add clutter where it earns nothing.)
-  if(frontier.rd>=0 && !roundComplete(frontier)) stages[stages.length-1]='Now';
+  // While the frontier round is still being played its feeding column is a live snapshot, not a
+  // settled "entering" one, so label it "Now"; it reverts to the round name once the round
+  // completes. Applies to group matchdays as well as knockout rounds.
+  if(!roundComplete(frontier)) stages[stages.length-1]='Now';
   return {stages, series, aliveLast, cur};
 }
 // Thematic line colour per team (national kit/flag identity). Covers the 2026 field;
@@ -1428,8 +1427,7 @@ function renderTrajectory(){
   // ("Now") odds and mark the end with a hollow dot -- the slope is the swing the team earned without playing.
   const nowCol=ns-1, liveNow=tr.stages[nowCol]==='Now';   // KO frontier mid-round -> show idle teams' live odds
   const pending=t=> liveNow && tr.aliveLast[t] && tr.series[t][nowCol]==null;
-  let anyPending=false;
-  teams.forEach(t=>{ if(!pending(t)) return; const li=lastIdx(t); if(li<0||li>=nowCol) return; anyPending=true;
+  teams.forEach(t=>{ if(!pending(t)) return; const li=lastIdx(t); if(li<0||li>=nowCol) return;
     svg+=`<polyline class="tj-proj" points="${X(li).toFixed(1)},${Y(tr.series[t][li]).toFixed(1)} `+
       `${X(nowCol).toFixed(1)},${Y(cur[t]).toFixed(1)}" style="stroke:${colour[t]||'#bbb'}"/>`; });
   // Flags: every drawn team gets a flag just to the RIGHT of where its line ENDS (its last dot), at the dot's
@@ -1453,13 +1451,13 @@ function renderTrajectory(){
     room = li<ns-1 ? Math.max(8, X(li+1)-baseX-16) : W-22-baseX;     // stay within the gap to the next column / the margin
     flagFan(byCol[k], baseX, room); });
   drawn.forEach(o=> svg+=(o.hollow                                   // hollow = live "Now" odds (yet to play); solid = entered the round
-      ? `<circle cx="${o.dx.toFixed(1)}" cy="${o.dy.toFixed(1)}" r="2.7" fill="#fff" stroke="${o.col}" stroke-width="1.2"/>`
+      ? `<circle cx="${o.dx.toFixed(1)}" cy="${o.dy.toFixed(1)}" r="1.8" fill="#fff" stroke="${o.col}" stroke-width="1.0"/>`   // same footprint + line weight as the solid dot, just open
       : `<circle cx="${o.dx.toFixed(1)}" cy="${o.dy.toFixed(1)}" r="2.3" fill="${o.col}"/>`)+
     `<line class="tj-conn" x1="${o.dx.toFixed(1)}" y1="${o.dy.toFixed(1)}" x2="${o.fx.toFixed(1)}" y2="${o.dy.toFixed(1)}"/>`);
   drawn.forEach(o=> svg+=`<text x="${o.fx.toFixed(1)}" y="${(o.dy+4).toFixed(1)}"${o.grey?' filter="url(#tjGray)"':''} style="font-size:12px">${FLAG[o.t]}</text>`);   // flags on top, so a connector never covers one
-  const more = below>0 ? `+ ${below} more team${below>1?'s':''} still in contention, yet to reach 1%` : '';
-  const leg = anyPending ? `${more?' · ':''}<span class="tj-leg">◦</span> live "Now" chance — yet to play this round` : '';
-  const cap = (more||leg) ? `<div class="tj-foot">${more}${leg}</div>` : '';
+  // Below the plot is reserved for the sub-1% tally alone: the area is simply present or empty
+  // (no legend mixed in), so it can blink in and out cleanly without disturbing anything else.
+  const cap = below>0 ? `<div class="tj-foot">+ ${below} more team${below>1?'s':''} still in contention, yet to reach 1%</div>` : '';
   el.innerHTML=svg+`</svg>`+cap;
 }
 function render(){
