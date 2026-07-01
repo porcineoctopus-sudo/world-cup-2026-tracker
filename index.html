@@ -22,6 +22,13 @@
                    border:1px solid var(--line); background:#fff; border-radius:4px; cursor:pointer; }
   h2.sec { font-size:13px; text-transform:uppercase; letter-spacing:1px;
            border-bottom:2px solid var(--line); margin:18px 12px 8px; padding-bottom:3px; }
+  details.sec-det > summary { cursor:pointer; list-style:none; font-size:13px; font-weight:700;
+           text-transform:uppercase; letter-spacing:1px; border-bottom:2px solid var(--line);
+           margin:18px 12px 8px; padding-bottom:3px; }
+  details.sec-det > summary::-webkit-details-marker { display:none; }
+  details.sec-det > summary::before { content:"\25B8\00a0"; color:var(--mut); }
+  details.sec-det[open] > summary::before { content:"\25BE\00a0"; }
+  .sec-hint { font-weight:400; text-transform:none; letter-spacing:0; font-size:9.5px; color:var(--mut); }
   .fl { font-family:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
         margin-right:4px; }
 
@@ -176,8 +183,10 @@
   <div id="sharebox"><span id="sharemsg"></span><br><input id="shareurl" readonly onclick="this.select()"></div>
 </header>
 <div id="banner"></div>
-<h2 class="sec">Group stage</h2>
+<details class="sec-det" id="groupsec">
+<summary>Group stage <span class="sec-hint" id="groupsumhint"></span></summary>
 <div class="groups" id="groups"></div>
+</details>
 <h2 class="sec">Qualification — who goes through</h2>
 <details class="pk"><summary>Verify &amp; override group finishes and the official best eight third-placed teams</summary>
 <div id="picker"></div></details>
@@ -191,9 +200,12 @@
 <h2 class="sec">Most likely finals</h2>
 <p class="sf-note">Match-ups at <strong>1%</strong> or more get a card. The big number is how often that <em>exact</em> final occurs; each side's figure is its chance of winning that game. These are specific pairings, so a team can be a 1%+ title pick without any single 1%+ final.</p>
 <div id="finals" class="finals"></div>
-<h2 class="sec">Full forecast &amp; team strength</h2>
-<div id="scorecard" class="scorecard"></div>
+<details class="sec-det" id="forecastsec" open>
+<summary>Full forecast <span class="sec-hint">— every team's odds, round by round</span></summary>
 <div id="forecast" class="tablewrap"></div>
+</details>
+<h2 class="sec">Calibration — your strengths vs the model</h2>
+<div id="scorecard" class="scorecard"></div>
 <details class="pk str-det"><summary>Adjust team strengths <span class="sd-h">— set your own values vs the model</span></summary>
 <p class="sf-note">Drag a team's slider to set <em>your</em> view of its strength — the model's value is marked on the track (↺ resets it). The whole forecast updates to match; it may take a moment to propagate the change through the tournament. Sliders are capped to keep things realistic.</p>
 <div id="viewtoggle" class="viewtoggle"></div>
@@ -1274,6 +1286,11 @@ function renderScorecard(){
     `<span class="sc-c${d<0?' win':''}">Model<b>${mod}</b></span>`+
     `<span class="sc-n">avg over ${s.n} game${s.n>1?'s':''} · higher is better</span>`;
 }
+// The group stage is a big block that stops contributing once every game is in, so
+// it collapses to a header; the summary hint tracks completeness on every render.
+function groupStageComplete(){ return GL.every(g=> scores[g].every(filled)); }
+function updateGroupHint(){ const h=document.getElementById('groupsumhint');
+  if(h) h.textContent = groupStageComplete() ? '— complete, tap to review' : ''; }
 // ===== Champion-chance trajectory ===========================================
 // One column per round (Pre, MD1.., R32..). A team's point in a round appears as
 // soon as THAT team has played its game in the round -- we don't wait for the whole
@@ -1464,11 +1481,13 @@ function render(){
   const a=document.activeElement, d=a&&a.dataset;
   const key=(d&&d.g!==undefined&&d.s!==undefined)?[d.g,d.m,d.s,a.selectionStart]:null;
   GUAR=guarantees(); resolveResults();   // refresh RES (incl. seatPin) so a picker/score edit updates the bracket markers now
-  renderGroups(); renderPicker(); renderBracket(); renderScorecard();
+  renderGroups(); renderPicker(); renderBracket(); renderScorecard(); updateGroupHint();
   if(key){ const el=document.querySelector(`input[data-g="${key[0]}"][data-m="${key[1]}"][data-s="${key[2]}"]`);
            if(el){ el.focus(); try{ el.setSelectionRange(key[3],key[3]); }catch(e){} } }
 }
 recompute();                       // sets LIVE + both forecast views + renders the table
 render(); renderStrengths(); showBanner();
+{ const gs=document.getElementById('groupsec');   // start collapsed once the group stage is done
+  if(gs) gs.open = !groupStageComplete(); }
 </script>
 </body></html>
