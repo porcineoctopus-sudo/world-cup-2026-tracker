@@ -34,11 +34,10 @@
   /* jersey-style World Cup title stars, one per championship (count from the finish data) */
   .stars { color:#d4af37; font-size:.78em; letter-spacing:-.5px; margin-left:3px;
            vertical-align:1px; white-space:nowrap; }
-  /* the star a projected champion would earn — identical to .stars; the "+" alone marks it */
-  .star-add { color:#d4af37; font-size:.78em; letter-spacing:-.5px; margin-left:3px;
-              vertical-align:1px; white-space:nowrap; }
+  /* the star a projected champion would earn sits inside the same .stars run (so it aligns with the
+     earned ones); it is hollow (☆) until the final is decided, then the filled ★. No extra style. */
 
-  .groups { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+  .groups { display:grid; grid-template-columns:repeat(auto-fill,minmax(372px,1fr));
             gap:8px; padding:0 12px; }
   .card { border:1px solid var(--line); border-radius:5px; background:#fff; padding:5px 7px; }
   .card h3 { font-size:12px; margin:0 0 3px; border-bottom:1.5px solid var(--line); padding-bottom:2px; }
@@ -55,7 +54,10 @@
   .cx { color:#c0392b; font-weight:700; font-size:11px; }   /* eliminated: red cross */
   .matches { margin-top:4px; display:flex; flex-direction:column; gap:1.5px; }
   .m { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; font-size:10.5px; }
-  .m .l { text-align:right; } .m .r { text-align:left; }
+  /* min-width:0 keeps the two 1fr sides EQUAL regardless of name length, so the score column (a
+     constant-width auto track) stays at the same x on every row -- long names no longer shove it. */
+  .m .l { text-align:right; white-space:nowrap; min-width:0; }
+  .m .r { text-align:left; white-space:nowrap; min-width:0; }
   .m .wp { color:var(--soft); font-size:8px; }
   .m input { width:20px; font:inherit; font-size:10.5px; text-align:center; border:1px solid var(--soft);
              border-radius:3px; padding:1px 0; } .m .sc { padding:0 4px; color:var(--mut); }
@@ -94,8 +96,8 @@
 
   .bracket { overflow-x:auto; padding:4px 12px 24px; }
   .rounds { display:flex; gap:18px; align-items:flex-start; min-width:max-content; }
-  .round { position:relative; width:172px; }   /* room for a name + its title stars + the % */
-  .round.wide { width:200px; }   /* Round of 32 carries seat labels (e.g. 1E, 2C, 3ABCDF) */
+  .round { position:relative; width:190px; }   /* room for a long name (Bosnia and Herzegovina) + stars + % */
+  .round.wide { width:230px; }   /* Round of 32 also carries seat labels (e.g. 1E, 2C, 3ABCDF), so wider */
   .round h4 { font-size:9px; text-transform:uppercase; letter-spacing:1px; color:var(--mut);
               text-align:center; margin:0; height:16px; }
   .tie { position:absolute; left:0; right:0; border:1px solid var(--line); border-radius:4px;
@@ -104,7 +106,7 @@
         border-bottom:1px solid #eee; }
   .tm:last-child { border-bottom:none; }
   .tm:hover { background:#f0f0f0; }
-  .tm .nm { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tm .nm { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.5; }   /* line-height gives descenders (g,y,p) room so overflow:hidden doesn't clip them */
   .tm .seat { flex:none; font-size:8px; color:var(--mut); border:1px solid var(--soft);
               border-radius:3px; padding:0 2px; line-height:1.4; white-space:nowrap; }
   .tm .pp { flex:none; color:var(--soft); font-size:8px; }   /* placement confidence: speculative-slot marker */
@@ -138,9 +140,9 @@
   .sc-n { font-size:9.5px; color:var(--soft); }
   .viewtoggle:not(:empty) { display:inline-flex; align-items:center; gap:6px; margin:0 12px 10px; font-size:11px; }
   .vt-lab { font-size:9px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); margin-right:2px; }
+  /* separate, gap-spaced pills (not a joined segmented control) -> each gets a full border + radius */
   .vt-btn { font:inherit; font-size:10.5px; padding:2px 9px; border:1px solid var(--line); background:#fff;
-            cursor:pointer; color:var(--mut); }
-  .vt-btn:first-of-type { border-radius:4px 0 0 4px; } .vt-btn:last-of-type { border-radius:0 4px 4px 0; border-left:none; }
+            border-radius:4px; cursor:pointer; color:var(--mut); }
   .vt-btn.on { background:var(--ink); color:#fff; }
   .trajectory { padding:0 12px 24px; overflow-x:auto; }
   .trajectory svg { font-family:inherit; display:block; }
@@ -155,8 +157,12 @@
   /* one line per team, matching the forecast table's row height so both columns
      end up the same overall height */
   .str-head { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--mut);
-              padding:1.5px 0; margin:0; border-bottom:1px solid #eee; }   /* match the bold table <th> header */
+              padding:1.5px 0; margin:0; border-bottom:1px solid #eee;   /* match the bold table <th> header */
+              display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .str-head .str-hint { font-weight:400; text-transform:none; letter-spacing:0; }
+  .str-rst-all { font:inherit; font-size:9px; font-weight:600; text-transform:none; letter-spacing:0;
+                 border:1px solid var(--soft); background:#fff; border-radius:3px; cursor:pointer;
+                 padding:1px 6px; color:var(--mut); white-space:nowrap; }
   .str-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(64px,1.2fr) 2.4em 1.4em;
              align-items:center; gap:6px; height:21px; border-bottom:1px solid #eee; }
   .str-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -628,13 +634,19 @@ function col(title, matches, r){
 }
 function renderBracket(){
   const b=bracket(), o=displayOrders(), pick=(arr,idx)=>idx.map(i=>arr[i]);
-  const champ=b.fin[0].winner, ft=topPx(4,0);
+  const fin=b.fin[0], champ=fin.winner, ft=topPx(4,0);
+  // The champion's earned stars plus the one for 2026, as ONE contiguous .stars run so it aligns
+  // with the others. It is HOLLOW (☆) while the final is a projection, and the filled ★ once the
+  // final's winner is locked; the tooltip flips to past tense then.
+  const won=!!locks[fin.id], nT=TITLES[champ]||0;
+  const champStars=`<span class="stars"${nT?` title="${nT}× World Cup champion"`:''}>${'★'.repeat(nT)}`+
+    `<span title="${won?'the star they earned':"the star they'd earn"}">${won?'★':'☆'}</span></span>`;
   document.getElementById('bracket').innerHTML =
     col('Round of 32', pick(b.r32,o.r32), 0) + col('Round of 16', pick(b.r16,o.r16), 1) +
     col('Quarter-finals', pick(b.qf,o.qf), 2) + col('Semi-finals', pick(b.sf,o.sf), 3) +
     `<div class="round" style="height:${COLH}px"><h4>Final</h4>`+
     `<div class="tie" style="top:${ft}px">${tie(b.fin[0])}</div>`+
-    `<div class="champ" style="top:${ft+72}px">🏆<br><span class="fl">${FLAG[champ]}</span> <b>${esc(champ)}${stars(champ)}<span class="star-add" title="the star they'd earn">+★</span></b></div></div>`;
+    `<div class="champ" style="top:${ft+72}px">🏆<br><span class="fl">${FLAG[champ]}</span> <b>${esc(champ)}${champStars}</b></div></div>`;
   document.getElementById('bracket').querySelectorAll('.tm').forEach(el=>{   // scoped: the finals-card .tm are inert
     el.addEventListener('click',()=>{ const id=el.dataset.id, t=el.dataset.t;
       locks[id] = (locks[id]===t) ? undefined : t; if(!locks[id]) delete locks[id];
@@ -1274,7 +1286,9 @@ function scheduleStrengthUpdate(){ if(_sru) clearTimeout(_sru);
 function renderStrengths(){
   const order=D.teams.map(t=>t.name).sort((a,b)=>S0[b]-S0[a]);
   document.getElementById('strengths').innerHTML =
-    `<div class="str-head">Team strength <span class="str-hint">— active value vs model v1 (marked)</span></div>`+
+    `<div class="str-head"><span>Team strength <span class="str-hint">— active value vs model v1 (marked)</span></span>`+
+    (Object.keys(strOver).length ? `<button class="str-rst-all" title="Reset every team to the model">Reset all ↺</button>` : '')+
+    `</div>`+
     order.map(t=>{ const rb=Math.round(S0[t]*100)/100,       // v1 model value -> the fixed marker
         v=Math.round(S[t]*100)/100,                           // ACTIVE strength (yours / v1 / v2) -> the thumb
         mod=Math.round(v*100)!==Math.round(rb*100),           // thumb differs from the v1 marker
@@ -1292,7 +1306,18 @@ function renderStrengths(){
     inp.addEventListener('dblclick',()=>resetStrength(inp.dataset.team)); });
   document.querySelectorAll('#strengths .str-rst').forEach(b=>
     b.addEventListener('click',()=>resetStrength(b.closest('.str-row').dataset.team)));
+  const rstAll=document.querySelector('#strengths .str-rst-all');
+  if(rstAll) rstAll.addEventListener('click', resetAllStrengths);
   syncStrHead();
+}
+// Clear every strength override at once (the per-row ↺ but for all teams) -- with several edits,
+// reverting them one by one is tedious. No custom values remain, so fall back to the v1 view.
+function resetAllStrengths(){
+  if(!Object.keys(strOver).length) return;
+  strOver={};
+  if(view==='mine') view='model';
+  applyStr(); invalidateMD(); clearTraj(); save();
+  render(); renderStrengths(); recompute();
 }
 // Pin the panel header to the forecast table's header height (they differ by a
 // sub-pixel from table vs block box models), so the two columns' rows line up
@@ -1303,12 +1328,15 @@ function syncStrHead(){ const th=document.querySelector('#forecast thead tr'),
 function onStrength(t,v){
   const switching=view!=='mine';                               // editing a model view customises it
   if(Math.round(v*100)===Math.round(S0[t]*100)) clearStrength(t); else setStrength(t,v);   // back at v1 -> clear
-  if(switching){ view='mine'; applyStr(); renderStrengths(); } else updateStrRow(t,v);
+  if(switching){ view='mine'; applyStr(); renderStrengths(); }
+  else if(!Object.keys(strOver).length){ applyStr(); renderStrengths(); }   // last override just cleared -> drop the Reset all button
+  else updateStrRow(t,v);
   scheduleStrengthUpdate();
 }
 function resetStrength(t){ const switching=view!=='mine';
   clearStrength(t);
   if(switching){ view='mine'; applyStr(); renderStrengths(); }
+  else if(!Object.keys(strOver).length){ applyStr(); renderStrengths(); }   // reset the last override -> drop the Reset all button (view fell back to v1)
   else { const rb=Math.round(S0[t]*100)/100;
     const row=document.querySelector(`#strengths .str-row[data-team="${t}"]`);
     if(row) row.querySelector('input').value=rb; updateStrRow(t,rb); }
